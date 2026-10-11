@@ -1,5 +1,7 @@
 # Home library subtitle tool
 
+This tool was developed with OpenAI Codex.
+
 `subtitle_tool.py` creates external SRT sidecars for Plex and Jellyfin. It scans
 a folder you choose and all its subfolders by default, leaves the movie files
 untouched, and never overwrites an existing subtitle. Each SRT is saved in the
