@@ -8,6 +8,7 @@ OpenSubtitles hash and media metadata; they are never changed.
 from __future__ import annotations
 
 import argparse
+import importlib.util
 import getpass
 import hashlib
 import io
@@ -51,6 +52,10 @@ class ApiFailure(Exception):
         super().__init__(message)
         self.status = status
         self.outage = outage
+
+
+class MediaProbeError(Exception):
+    """The media file could not be read or has no usable media streams."""
 
 
 def api_error_message(exc):
@@ -217,12 +222,20 @@ def probe_media(path: Path) -> dict:
         try:
             result = subprocess.run(
                 [ffprobe, "-v", "error", "-show_entries",
-                 "stream=codec_type,avg_frame_rate,r_frame_rate:stream_tags=language",
+                 "format=duration:stream=codec_type,avg_frame_rate,r_frame_rate:stream_tags=language",
                  "-of", "json", str(path)], capture_output=True, text=True,
                 check=True, timeout=120,
             )
-            streams = json.loads(result.stdout).get("streams", [])
-            info = {"fps": None, "fps_method": None, "languages": {}}
+            parsed = json.loads(result.stdout)
+            streams = parsed.get("streams", [])
+            info = {"fps": None, "fps_method": None, "languages": {},
+                    "duration": None, "probe_status": "verified", "probe_error": None}
+            try:
+                info["duration"] = float(parsed.get("format", {}).get("duration"))
+            except (TypeError, ValueError, json.JSONDecodeError):
+                pass
+            if not streams:
+                raise MediaProbeError("ffprobe found no readable media streams")
             for stream in streams:
                 kind = stream.get("codec_type", "unknown")
                 lang = stream.get("tags", {}).get("language", "und")
@@ -239,14 +252,27 @@ def probe_media(path: Path) -> dict:
                     except (AttributeError, ValueError, ZeroDivisionError):
                         pass
             return info
-        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, TypeError, AttributeError):
-            pass
+        except subprocess.CalledProcessError as exc:
+            detail = (exc.stderr or "").strip().splitlines()
+            raise MediaProbeError(detail[-1] if detail else "ffprobe could not read this media file") from exc
+        except (OSError, subprocess.SubprocessError, json.JSONDecodeError, TypeError, AttributeError) as exc:
+            raise MediaProbeError(f"ffprobe failed: {exc}") from exc
     if path.suffix.lower() in {".mp4", ".m4v", ".mov"}:
         try:
-            return probe_mp4(path)
-        except OSError:
-            pass
-    return {"fps": None, "fps_method": None, "languages": {}}
+            info = probe_mp4(path)
+            if not info["languages"]:
+                raise MediaProbeError("MP4 metadata is missing or malformed (no readable moov/tracks)")
+            info.update(duration=None, probe_status="verified", probe_error=None)
+            return info
+        except OSError as exc:
+            raise MediaProbeError(f"could not read media file: {exc}") from exc
+    try:
+        if path.stat().st_size == 0:
+            raise MediaProbeError("media file is empty")
+    except OSError as exc:
+        raise MediaProbeError(f"could not inspect media file: {exc}") from exc
+    return {"fps": None, "fps_method": None, "languages": {}, "duration": None,
+            "probe_status": "unverified", "probe_error": "ffprobe is not installed"}
 
 
 def describe_media(path: Path, info: dict):
@@ -289,14 +315,31 @@ def fps_comparison(candidate_fps, source_fps):
 
 def request(url: str, *, method="GET", data=None, headers=None):
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
-    try:
-        with urllib.request.urlopen(req, timeout=45) as response:
-            return response.read(), response.headers
-    except urllib.error.HTTPError as exc:
-        raise ApiFailure(api_error_message(exc), status=exc.code,
-                         outage=exc.code >= 500) from exc
-    except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
-        raise ApiFailure(api_error_message(exc), outage=True) from exc
+    retryable = method.upper() == "GET"
+    for attempt in range(3 if retryable else 1):
+        try:
+            with urllib.request.urlopen(req, timeout=45) as response:
+                body = response.read(50 * 1024 * 1024 + 1)
+                if len(body) > 50 * 1024 * 1024:
+                    raise ValueError("OpenSubtitles response exceeded the 50 MiB safety limit")
+                return body, response.headers
+        except urllib.error.HTTPError as exc:
+            can_retry = retryable and (exc.code == 429 or exc.code >= 500) and attempt < 2
+            if can_retry:
+                retry_after = exc.headers.get("Retry-After") if exc.headers else None
+                try:
+                    delay = min(10, max(0, float(retry_after))) if retry_after else 2 ** attempt
+                except ValueError:
+                    delay = 2 ** attempt
+                time.sleep(delay)
+                continue
+            raise ApiFailure(api_error_message(exc), status=exc.code,
+                             outage=exc.code >= 500) from exc
+        except (urllib.error.URLError, TimeoutError, socket.timeout) as exc:
+            if retryable and attempt < 2:
+                time.sleep(2 ** attempt)
+                continue
+            raise ApiFailure(api_error_message(exc), outage=True) from exc
 
 
 def json_object(raw: bytes, description: str) -> dict:
@@ -329,22 +372,49 @@ def api_items(payload: dict) -> list[dict]:
 def srt_payload(blob: bytes) -> bytes | None:
     """Unpack an API download (usually ZIP); return UTF-8 SRT bytes."""
     if blob.startswith(b"PK"):
-        with zipfile.ZipFile(io.BytesIO(blob)) as zf:
-            entries = [n for n in zf.namelist() if n.lower().endswith(".srt")]
-            if not entries:
-                return None
-            if zf.getinfo(entries[0]).file_size > 50 * 1024 * 1024:
-                raise ValueError("Downloaded subtitle archive contains an unexpectedly large SRT")
-            return zf.read(entries[0]).decode("utf-8-sig", errors="replace").encode("utf-8")
+        try:
+            with zipfile.ZipFile(io.BytesIO(blob)) as zf:
+                entries = [n for n in zf.namelist() if n.lower().endswith(".srt")]
+                if not entries:
+                    return None
+                if zf.getinfo(entries[0]).file_size > 50 * 1024 * 1024:
+                    raise ValueError("Downloaded subtitle archive contains an unexpectedly large SRT")
+                return zf.read(entries[0]).decode("utf-8-sig", errors="replace").encode("utf-8")
+        except (zipfile.BadZipFile, zipfile.LargeZipFile, RuntimeError) as exc:
+            raise ValueError(f"Downloaded subtitle archive is damaged or unsupported: {exc}") from exc
     text = blob.decode("utf-8-sig", errors="replace")
     if "-->" in text:
         return text.encode("utf-8")
     return None
 
 
-def valid_srt(data: bytes) -> bool:
+def valid_srt(data: bytes, duration: float | None = None) -> bool:
     text = data.decode("utf-8-sig", errors="replace")
-    return "-->" in text and bool(re.search(r"\d{2}:\d{2}:\d{2}[,.]\d{3}\s+-->\s+\d{2}:\d{2}:\d{2}[,.]\d{3}", text))
+    cue = re.compile(r"^(\d{2}):(\d{2}):(\d{2})[,.](\d{3})\s+-->\s+(\d{2}):(\d{2}):(\d{2})[,.](\d{3})(?:\s+.*)?$")
+    previous_start = -1
+    latest_end = 0
+    cue_count = 0
+    for line in text.splitlines():
+        match = cue.match(line.strip())
+        if not match:
+            continue
+        parts = [int(value) for value in match.groups()[:8]]
+        start = ((parts[0] * 60 + parts[1]) * 60 + parts[2]) * 1000 + parts[3]
+        end = ((parts[4] * 60 + parts[5]) * 60 + parts[6]) * 1000 + parts[7]
+        if end <= start or parts[1] > 59 or parts[2] > 59 or parts[5] > 59 or parts[6] > 59:
+            return False
+        if start < previous_start:
+            return False
+        previous_start = start
+        latest_end = max(latest_end, end)
+        cue_count += 1
+    if previous_start < 0:
+        return False
+    if cue_count < 2 and (duration is None or duration > 30):
+        return False
+    if duration and duration > 0 and latest_end > (duration + max(2, duration * 0.02)) * 1000:
+        return False
+    return True
 
 
 def api_headers(key: str, token: str | None = None):
@@ -610,7 +680,11 @@ def scan_videos(root: Path, recursive: bool):
             for name in filenames:
                 path = Path(directory) / name
                 if path.suffix.lower() in VIDEO_EXTS:
-                    videos.append(path)
+                    try:
+                        if path.is_file():
+                            videos.append(path)
+                    except OSError as exc:
+                        warnings.append(f"Could not inspect {path}: {exc}")
     else:
         try:
             for path in root.iterdir():
@@ -642,6 +716,19 @@ def whisper_fallback(path: Path, model_name: str):
     return ("\r\n".join(lines) + "\r\n").encode("utf-8")
 
 
+def preflight(transcribe_missing: bool) -> list[str]:
+    """Check dependencies required by the selected features before scanning."""
+    problems = []
+    if sys.version_info < (3, 10):
+        problems.append("Python 3.10 or newer is required.")
+    if transcribe_missing:
+        if importlib.util.find_spec("whisper") is None:
+            problems.append("Local transcription needs OpenAI Whisper: install with 'python -m pip install openai-whisper'.")
+        if not shutil.which("ffmpeg"):
+            problems.append("Local transcription needs FFmpeg installed and available on PATH.")
+    return problems
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("folder", nargs="?", default=".", type=Path, help="folder to scan")
@@ -654,6 +741,11 @@ def main():
     parser.add_argument("--transcribe-missing", action="store_true", help="use local Whisper when no downloaded SRT is selected")
     parser.add_argument("--model", default="small", help="Whisper model for local fallback (default: small)")
     args = parser.parse_args()
+    dependency_problems = preflight(args.transcribe_missing)
+    if dependency_problems:
+        for problem in dependency_problems:
+            print(f"Dependency error: {problem}", file=sys.stderr)
+        return 2
     try:
         root = args.folder.expanduser().resolve()
     except OSError as exc:
@@ -739,21 +831,36 @@ def main():
             existing_srt = matching_srt_sidecar(video)
         except OSError as exc:
             row["notes"].append(f"Could not inspect neighboring subtitle files: {exc}")
-            row["status"] = "File access error"
+            row["status"] = "Media error"
             if not args.transcribe_missing:
                 continue
             existing_srt = None
         if existing_srt:
             print(f"Ignoring {video.name}: matching subtitle already exists ({existing_srt.name}).")
             row["status"] = "Ignored (existing SRT)"
-            row["outputs"].append(str(existing_srt.resolve()))
+            try:
+                row["outputs"].append(str(existing_srt.resolve()))
+            except OSError as exc:
+                row["notes"].append(f"Could not resolve existing subtitle path: {exc}")
             continue
         try:
             media_info = probe_media(video)
-        except (OSError, ValueError, TypeError, AttributeError) as exc:
+        except MediaProbeError as exc:
+            message = f"Media file is unreadable or malformed: {exc}"
+            row["notes"].append(message)
+            row["status"] = "File access error"
+            print(f"{video.name}: {message}")
+            continue
+        except (ValueError, TypeError, AttributeError) as exc:
             media_info = {"fps": None, "fps_method": None, "languages": {}}
             row["notes"].append(f"Media metadata could not be read: {exc}")
-        describe_media(video, media_info)
+        if media_info.get("probe_status") == "unverified":
+            row["notes"].append("Media could not be fully verified because ffprobe is unavailable; metadata may be incomplete.")
+        try:
+            describe_media(video, media_info)
+        except Exception as exc:
+            row["notes"].append(f"Could not display media details: {type(exc).__name__}: {exc}")
+            print(f"{video.name}: could not display media details: {exc}")
         source_fps = media_info.get("fps")
         downloaded = 0
         if api_active:
@@ -773,6 +880,8 @@ def main():
                                 else:
                                     download_attempts += 1
                                     data = download(selected, key, token, api_base)
+                                    if not valid_srt(data, media_info.get("duration")):
+                                        raise RuntimeError("Downloaded subtitle cues are malformed or extend well beyond the video runtime")
                                     written = write_subtitle(video, data, sdh=hearing)
                                     if written:
                                         row["outputs"].append(str(written.resolve()))
@@ -791,6 +900,8 @@ def main():
                         else:
                             download_attempts += 1
                             data = download(selected, key, token, api_base)
+                            if not valid_srt(data, media_info.get("duration")):
+                                raise RuntimeError("Downloaded subtitle cues are malformed or extend well beyond the video runtime")
                             written = write_subtitle(video, data, sdh=hearing)
                             if written:
                                 row["outputs"].append(str(written.resolve()))
@@ -841,7 +952,7 @@ def main():
         if args.transcribe_missing and not row["outputs"]:
             try:
                 data = whisper_fallback(video, args.model)
-                if valid_srt(data):
+                if valid_srt(data, media_info.get("duration")):
                     written = write_subtitle(video, data)
                     if written:
                         row["outputs"].append(str(written.resolve()))
@@ -893,7 +1004,7 @@ def main():
                 print(f"  Subtitle/location: {output}")
             for note in row["notes"]:
                 print(f"  Note: {note}")
-    failures = {"API error", "API unavailable", "File access error", "File or download error",
+    failures = {"API error", "API unavailable", "File access error", "Media error", "File or download error",
                 "File or processing error", "Completed with API issue"}
     return 1 if scan_warnings or any(row["status"] in failures for row in report) else 0
 

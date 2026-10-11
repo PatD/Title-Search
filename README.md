@@ -84,6 +84,16 @@ transcription still runs for affected movies when `--transcribe-missing` is
 enabled. Title search uses a cleaned filename title and optional year after
 hash search; candidate selection remains manual. SRT outputs are published
 atomically and an existing sidecar is never replaced.
+
+GET requests retry temporary network, server, and rate-limit failures up to
+three times (respecting numeric `Retry-After` values); login and download POSTs
+are not retried to avoid repeating account actions. When local transcription
+is requested, startup checks for Whisper and FFmpeg before scanning. `ffprobe`
+remains optional; without it, MP4 metadata is inspected directly and other
+formats are marked unverified. A file that fails media probing is reported and
+skipped. Downloaded subtitles are checked for ordered, valid cues and timings
+that are reasonably close to the probed movie duration. Full-length movies must
+have at least two valid cues; subtitle responses are capped at 50 MiB.
 The run exits with status 1 when it encounters actionable scan or processing
 errors, status 2 for startup/configuration errors, and status 130 when
 interrupted. A clean run, including one with no matches, exits with status 0.
@@ -92,6 +102,8 @@ When Rich is installed, movie metadata appears in a compact panel, subtitle
 candidates appear in a table with frame-rate matches and mismatches highlighted,
 and the final report is a table. Candidate selection remains numbered and
 interactive.
+
+Run the resilience tests with `python -m unittest discover -s tests -v`.
 
 The credentials JSON is plain text on this Windows account. The ignore rule
 prevents Git from tracking it; it does not encrypt the file.
