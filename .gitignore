@@ -1,0 +1,10 @@
+subtitle_credentials.json
+*.srt
+*.mp4
+*.mkv
+*.avi
+*.mov
+*.m4v
+*.webm
+__pycache__/
+*.py[cod]
