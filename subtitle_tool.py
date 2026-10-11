@@ -45,6 +45,21 @@ def show(message, *, style=None):
         print(message)
 
 
+def prompt_for_folder() -> str:
+    """Present the folder prompt in the polished console when Rich is available."""
+    if console:
+        console.print(Panel.fit(
+            "Choose the root of your movie library. The app searches that folder "
+            "and its subfolders, then saves subtitle sidecars next to each movie.",
+            title="[bold cyan]Home Library Subtitle Tool[/bold cyan]",
+            border_style="cyan",
+        ))
+        return console.input("[bold cyan]Movie folder path[/bold cyan] (blank to quit): ").strip()
+    print("\nHome Library Subtitle Tool")
+    print("Enter the root movie folder; subfolders are searched automatically.")
+    return input("Movie folder path (blank to quit): ").strip()
+
+
 class ApiFailure(Exception):
     """An API failure with enough context to decide whether to stop retrying."""
 
@@ -731,7 +746,7 @@ def preflight(transcribe_missing: bool) -> list[str]:
 
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("folder", nargs="?", default=".", type=Path, help="folder to scan")
+    parser.add_argument("folder", nargs="?", type=Path, help="folder to scan (prompted for when omitted)")
     parser.add_argument("--recursive", dest="recursive", action="store_true", help="scan subfolders (default)")
     parser.add_argument("--no-recursive", dest="recursive", action="store_false", help="scan only the selected folder")
     parser.set_defaults(recursive=True)
@@ -741,6 +756,16 @@ def main():
     parser.add_argument("--transcribe-missing", action="store_true", help="use local Whisper when no downloaded SRT is selected")
     parser.add_argument("--model", default="small", help="Whisper model for local fallback (default: small)")
     args = parser.parse_args()
+    if args.folder is None:
+        try:
+            folder = prompt_for_folder()
+        except EOFError:
+            folder = ""
+        if not folder:
+            show("No folder path provided. Exiting.", style="yellow")
+            return 0
+        # Accept paths pasted from Windows Explorer, which are often surrounded by quotes.
+        args.folder = Path(folder.strip('"'))
     dependency_problems = preflight(args.transcribe_missing)
     if dependency_problems:
         for problem in dependency_problems:
@@ -763,7 +788,7 @@ def main():
     for warning in scan_warnings:
         show(f"Warning: {warning}", style="yellow")
     if not videos:
-        show("No supported video files found.", style="yellow")
+        show(f"No supported video files found in {root} or its subfolders.", style="yellow")
         return 1 if scan_warnings else 0
     if console:
         console.print(Panel.fit(

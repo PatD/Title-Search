@@ -106,6 +106,38 @@ class ResilienceTests(unittest.TestCase):
                     tool.write_subtitle(movie, b"sample")
             self.assertFalse((Path(directory) / "movie.en.srt").exists())
 
+    def test_no_path_prompts_then_exits_when_input_is_blank(self):
+        with mock.patch.object(sys, "argv", [str(MODULE_PATH)]), \
+             mock.patch.object(tool, "console", None), \
+             mock.patch("builtins.input", return_value="") as prompt, \
+             mock.patch.object(tool, "show") as show:
+            result = tool.main()
+        self.assertEqual(result, 0)
+        prompt.assert_called_once()
+        show.assert_called_once_with("No folder path provided. Exiting.", style="yellow")
+
+    def test_folder_prompt_uses_rich_console_when_available(self):
+        rich_console = mock.Mock()
+        rich_console.input.return_value = "C:\\Movies"
+        with mock.patch.object(tool, "console", rich_console):
+            result = tool.prompt_for_folder()
+        self.assertEqual(result, "C:\\Movies")
+        rich_console.print.assert_called_once()
+        rich_console.input.assert_called_once()
+
+    def test_interactive_folder_with_no_videos_reports_empty_library(self):
+        with tempfile.TemporaryDirectory(dir=MODULE_PATH.parent / "tests") as directory, \
+             mock.patch.object(sys, "argv", [str(MODULE_PATH)]), \
+             mock.patch.object(tool, "console", None), \
+             mock.patch("builtins.input", return_value=directory), \
+             mock.patch.object(tool, "show") as show:
+            result = tool.main()
+        self.assertEqual(result, 0)
+        self.assertTrue(any(
+            "No supported video files found" in call.args[0]
+            for call in show.call_args_list
+        ))
+
 
 if __name__ == "__main__":
     unittest.main()

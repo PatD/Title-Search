@@ -28,9 +28,10 @@ timing and track language metadata directly.
 ## Requirements
 
 - Python 3.10 or newer.
-- For the polished tables and colored status indicators, install Rich in the
-  same Python environment used to run the tool: `python -m pip install rich`.
-  The script still runs with plain console output if Rich is not installed.
+- For the polished welcome prompt, tables, and colored status indicators,
+  install Rich in the same Python environment used to run the tool:
+  `python -m pip install -r requirements.txt`. The script still runs with plain
+  console output if Rich is not installed.
 - To download existing subtitles: an OpenSubtitles.com account and API key.
   Create the account at [OpenSubtitles](https://www.opensubtitles.com/en), then
   create an API key from your account profile as described in their
@@ -54,10 +55,16 @@ timing and track language metadata directly.
 
 ## Examples
 
+Run the script without a folder argument to enter a local folder path when
+prompted. Press Enter without entering a path to quit. The tool searches the
+selected folder and its subfolders for supported video files and reports when
+none are found.
+
 ```powershell
 python -m pip install rich
 Copy-Item .\subtitle_credentials.example.json .\subtitle_credentials.json
 notepad .\subtitle_credentials.json
+python .\subtitle_tool.py
 python .\subtitle_tool.py "C:\Movies"
 python .\subtitle_tool.py "D:\Library" --recursive --style both
 python .\subtitle_tool.py "D:\Library" --max-downloads 4
