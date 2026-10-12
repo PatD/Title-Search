@@ -1,120 +1,187 @@
-# Home library subtitle tool
+# Title Search
 
 This tool was developed with OpenAI Codex.
 
-**Title Search** creates external SRT sidecars for Plex and Jellyfin. Its
-full-screen, keyboard-driven interface uses a dark green and amber palette. It
-runs on Windows, macOS, and Linux in a terminal with Python 3.10+ installed. It scans
-a folder you choose and all its subfolders by default, leaves movie files
-untouched, and never overwrites an existing subtitle. Each SRT is saved beside
-its movie as `Movie.en.srt` (standard English) or `Movie.en.sdh.srt` (English
-SDH).
+Title Search finds or creates external `.srt` subtitles for a movie library. The
+sidecar files work with Plex and Jellyfin. The app has a full-screen, keyboard-
+driven Textual interface with a dark green and amber theme, and runs on Windows,
+macOS, and Linux.
 
-Before searching, it skips a movie when a same-folder SRT has the same basename
-(`Movie.srt`, `Movie.en.srt`, `Movie.en.sdh.srt`, etc.) and prints which file
-caused the skip.
+It searches OpenSubtitles by file hash first, then by title and year when no hash
+match is available. It presents candidates for you to choose; it does not
+automatically select a title-search result. Candidate details include the
+catalog release, language, caption type, download count, and reported frame
+rate. The app compares that frame rate with the movie and marks it as a match,
+mismatch, or unknown. SRT itself has no frame-rate field, so the source video
+and subtitle timing must match the same cut. Review the release and timing
+before selecting a candidate. OpenSubtitles may not distinguish U.S. English
+from other English variants consistently.
 
-SRT cues use elapsed-time timestamps; the format has no frame-rate field. The
-tool searches OpenSubtitles using the file hash, which favors subtitles uploaded
-for that exact file. It shows the release names and asks you to choose before
-downloading, since different uploads can still have different timing or cuts.
-If there is no exact hash result, it searches by title and year parsed from the
-filename, shows the catalog's release name and frame rate when available, and
-still waits for you to choose. It does not automatically select a different cut.
-For each movie it also prints the source video frame rate and language tags
-found on its tracks. When choosing a candidate, the tool labels its reported
-FPS as a match, mismatch, or unknown relative to that file. MP4 files are read
-only; the tool uses `ffprobe` when installed and otherwise reads MP4 sample
-timing and track language metadata directly.
+Movie files are read-only. Subtitles are saved beside their movies as
+`Movie.en.srt` for standard English and `Movie.en.sdh.srt` for English SDH.
+Existing same-folder SRT sidecars with a matching movie basename are skipped
+and never overwritten. The completion status calls out when every scanned movie
+already has a matching SRT.
 
-## Requirements
+## Install
+
+Requirements:
 
 - Python 3.10 or newer.
-- Install the interface and console dependencies in the Python environment
-  used to run the tool: `python -m pip install -r requirements.txt`.
-- To download existing subtitles: an OpenSubtitles.com account and API key.
-  Create the account at [OpenSubtitles](https://www.opensubtitles.com/en), then
-  create an API key from your account profile as described in their
-  [Getting Started guide](https://opensubtitles.tawk.help/article/getting-started).
-  By default, the tool reads optional `subtitle_credentials.json` beside the
-  script. Copy `subtitle_credentials.example.json` to that name and replace the
-  placeholder values. `.gitignore` excludes the credential file. If the file is
-  missing or a field is omitted, the tool prompts for it. Environment variables
-  `OPENSUBTITLES_API_KEY`, `OPENSUBTITLES_USERNAME`, and
-  `OPENSUBTITLES_PASSWORD` override the file values.
-- Free-account download protection: OpenSubtitles' current help pages disagree:
-  one says 20 downloads per day for a free account, while its Getting Started
-  page says regular accounts get 10. The tool uses the conservative 10-download
-  cap per run, reads the account's remaining quota when available, lets you
-  lower the run cap with `--max-downloads`, and stops after HTTP 403/429
-  responses. Search requests do not count as downloads. OpenSubtitles enforces
-  the actual daily account quota, including across repeated runs.
-- For the optional local fallback: OpenAI Whisper and FFmpeg installed. Whisper
-  processes the movie audio locally and produces an SRT, but machine-generated
-  dialogue should be reviewed for errors. The first run downloads its model.
+- Internet access and an OpenSubtitles.com API key to search and download
+  existing subtitles.
+- FFmpeg and OpenAI Whisper only if you want the optional local transcription
+  fallback. Without `ffprobe`, MP4 metadata is read directly; metadata for other
+  formats may be unverified.
 
-## Examples
+From a terminal, clone or download this repository and change to its folder.
+Using a virtual environment keeps the app's dependencies separate from other
+Python projects.
 
-Launch the full-screen TUI with `python .\subtitle_tool.py`. Use Tab and the
-arrow keys to move between controls, Enter to activate buttons or choose a
-subtitle, and Ctrl+Q to quit. In the movie picker, press S or Esc to skip a
-candidate list. You may pass a folder path to prefill the library field.
+### Windows PowerShell
 
 ```powershell
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install --upgrade pip
 python -m pip install -r requirements.txt
-Copy-Item .\subtitle_credentials.example.json .\subtitle_credentials.json
-notepad .\subtitle_credentials.json
-python .\subtitle_tool.py
-python .\subtitle_tool.py "C:\Movies"
-python .\subtitle_tool.py --cli "D:\Library" --recursive --style both
-python .\subtitle_tool.py --cli "D:\Library" --max-downloads 4
-python .\subtitle_tool.py --cli "D:\Library" --transcribe-missing
-python .\subtitle_tool.py --cli "D:\Library" --transcribe-missing --model medium
 ```
 
-The TUI is the default. Add `--cli` to use the original console workflow and
-its command-line options directly.
+If `py` is unavailable, use `python` in place of `py -3`.
 
-The default style is standard English. `--style sdh` prefers hearing-impaired
-captions; `--style both` offers each type when available. `--transcribe-missing`
-enables the local fallback for movies with no selected download. A blank API key
-can be entered to use local transcription only.
+### macOS or Linux
 
-At the end of each run, the tool prints a per-movie report showing whether a
-subtitle was downloaded, an existing SRT caused a skip, or no subtitle was
-created, along with full paths for subtitle files and any relevant notes. Use
-`--no-recursive` to scan only the selected folder.
+```sh
+python3 -m venv .venv
+source .venv/bin/activate
+python -m pip install --upgrade pip
+python -m pip install -r requirements.txt
+```
 
-The tool reports API authentication, rate-limit, service-outage, malformed
-response, file-access, and output-write errors separately. A network outage,
-API-key rejection, HTTP 403/429, or malformed API response stops further
-catalog requests for that run. If account login returns HTTP 401, the tool
-reports it and tries API-key search without an account session. Local Whisper
-transcription still runs for affected movies when `--transcribe-missing` is
-enabled. Title search uses a cleaned filename title and optional year after
-hash search; candidate selection remains manual. SRT outputs are published
-atomically and an existing sidecar is never replaced.
+### OpenSubtitles credentials
 
-GET requests retry temporary network, server, and rate-limit failures up to
-three times (respecting numeric `Retry-After` values); login and download POSTs
-are not retried to avoid repeating account actions. When local transcription
-is requested, startup checks for Whisper and FFmpeg before scanning. `ffprobe`
-remains optional; without it, MP4 metadata is inspected directly and other
-formats are marked unverified. A file that fails media probing is reported and
-skipped. Downloaded subtitles are checked for ordered, valid cues and timings
-that are reasonably close to the probed movie duration. Full-length movies must
-have at least two valid cues; subtitle responses are capped at 50 MiB.
-The run exits with status 1 when it encounters actionable scan or processing
-errors, status 2 for startup/configuration errors, and status 130 when
-interrupted. A clean run, including one with no matches, exits with status 0.
+Create an account at [OpenSubtitles](https://www.opensubtitles.com/en) and
+create an API key from your account profile using their
+[Getting Started guide](https://opensubtitles.tawk.help/article/getting-started).
+The API key enables searching. An account username and password are also needed
+to download subtitles.
 
-In the TUI, candidate releases are presented in a keyboard-navigable picker,
-including the catalog FPS comparison, language, caption type, and download
-count. Green FPS indicates a match, amber a mismatch, and muted gold unknown
-FPS. The activity panel streams the scan and final report. Use `--cli` for the
-original Rich console tables and numbered candidate selection.
+To keep credentials between runs, copy the example file beside the scripts and
+edit its values:
 
-Run the resilience tests with `python -m unittest discover -s tests -v`.
+```powershell
+Copy-Item .\subtitle_credentials.example.json .\subtitle_credentials.json
+notepad .\subtitle_credentials.json
+```
 
-The credentials JSON is plain text on this Windows account. The ignore rule
-prevents Git from tracking it; it does not encrypt the file.
+On macOS or Linux, use:
+
+```sh
+cp subtitle_credentials.example.json subtitle_credentials.json
+nano subtitle_credentials.json
+```
+
+The JSON file accepts `api_key`, `username`, and `password`. It is excluded by
+`.gitignore`, so Git will not add it to commits. The file is plain text and is
+not encrypted. You can instead set `OPENSUBTITLES_API_KEY`,
+`OPENSUBTITLES_USERNAME`, and `OPENSUBTITLES_PASSWORD` environment variables;
+they override values in the JSON file. The TUI's Credentials screen accepts
+values for the current run but does not save them.
+
+## Use the TUI
+
+Activate the virtual environment, then launch either entry point:
+
+```powershell
+python .\title_search_tui.py
+```
+
+or:
+
+```powershell
+python .\subtitle_tool.py
+```
+
+Use the equivalent `python title_search_tui.py` or `python subtitle_tool.py` on
+macOS and Linux. You may pass a folder to `subtitle_tool.py` to prefill the
+library path field:
+
+```powershell
+python .\subtitle_tool.py "D:\Movies"
+```
+
+In the interface:
+
+1. Enter the folder that contains your movies. The app searches subfolders by
+   default. Windows paths accept either `/` or `\` separators.
+2. Choose Standard English, English SDH, or Offer both. Set the per-run
+   download cap if desired, and optionally enable local transcription.
+3. Choose **Start scan**. If credentials are missing, enter them in the
+   Credentials screen. **Search only** lets you search the catalog without
+   downloading; downloads require account credentials.
+4. Review candidate releases and use the arrow keys and Enter to choose one.
+   Press Esc to skip candidates for that movie.
+
+Use Tab and the arrow keys to move through controls, Enter to activate them,
+Ctrl+R to start a scan, and Ctrl+Q to quit. **Clear activity** clears the log;
+**Cancel scan** stops the current scan.
+
+The activity log shows each movie's outcome and subtitle path. The final status
+summarizes videos scanned, existing SRTs skipped, subtitles created, videos
+without subtitles, and issues. If all movies already have matching SRT files,
+the status explicitly says so. If no videos are found, the status reports that.
+
+## Use the command-line interface
+
+The TUI is the default. Add `--cli` to `subtitle_tool.py` to use the original
+console interface and its command-line options:
+
+```powershell
+python .\subtitle_tool.py --cli "D:\Movies"
+python .\subtitle_tool.py --cli "D:\Movies" --no-recursive
+python .\subtitle_tool.py --cli "D:\Movies" --style sdh
+python .\subtitle_tool.py --cli "D:\Movies" --style both --max-downloads 4
+python .\subtitle_tool.py --cli "D:\Movies" --transcribe-missing
+python .\subtitle_tool.py --cli "D:\Movies" --transcribe-missing --model medium
+```
+
+Subfolder searching is on by default; use `--no-recursive` to scan only the
+selected folder. The default subtitle style is `standard`; other values are
+`sdh` and `both`. The conservative free-account download cap is 10 per run.
+The tool reads the account's remaining quota when available, and OpenSubtitles
+enforces its actual daily quota across all runs. Searches do not count as
+downloads. `--max-downloads` can lower the per-run cap.
+
+For local transcription, install Whisper and FFmpeg separately. The first
+Whisper run downloads the selected model. Transcription runs locally and may
+mishear dialogue, so review generated subtitles.
+
+## Errors and troubleshooting
+
+- **No video files found:** Check that the selected folder contains supported
+  video files. Recursive searching is enabled by default.
+- **Folder not found:** Check the path. Windows accepts either slash direction;
+  paths containing spaces can be pasted with or without surrounding quotes.
+- **No candidates or no subtitle created:** The catalog may not have a match
+  for that file or release. Check the movie filename, title/year result, cut,
+  and FPS details. Enable local transcription if you want a fallback.
+- **API authentication, quota, or network issue:** Check the API key and account
+  credentials. Temporary GET failures are retried; service outages, rejected
+  credentials, rate limits, and invalid API responses are reported in the log.
+- **Whisper or FFmpeg dependency error:** Install both and ensure FFmpeg is on
+  `PATH`, then restart the app.
+- **Media probe issue:** `ffprobe` is optional. MP4 metadata can be inspected
+  directly when it is unavailable; other formats may be marked unverified.
+
+Downloaded subtitles are checked for valid, ordered cues and timing close to
+the movie runtime. Output is written atomically, and an existing sidecar is
+never replaced. The CLI exits with status 1 for scan or processing errors,
+status 2 for startup/configuration errors, and status 130 when interrupted.
+
+## Tests
+
+Run the test suite from the repository folder with:
+
+```sh
+python -m unittest discover -s tests -v
+```
