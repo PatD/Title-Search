@@ -6,12 +6,14 @@ import subprocess
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest import mock
 
 from textual.widgets import Input
 
 from title_search_tui import (
     CandidateScreen,
+    ScanIndicator,
     TitleSearchApp,
     format_run_summary,
     normalize_folder_path,
@@ -46,6 +48,7 @@ class TitleSearchTuiTests(unittest.TestCase):
             with self.subTest(button=button_id):
                 app = TitleSearchApp()
                 app.run_worker = mock.Mock()
+                app._require_folder_path = mock.Mock(return_value="C:/Movies")
                 event = mock.Mock()
                 event.button.id = button_id
 
@@ -55,18 +58,124 @@ class TitleSearchTuiTests(unittest.TestCase):
                 self.assertEqual(app.run_worker.call_args.kwargs["group"], expected_group)
                 app.run_worker.call_args.args[0].close()
 
-    def test_start_without_folder_sets_inline_guidance(self):
+    def test_launch_without_folder_reports_error_and_does_not_start_worker(self):
         app = TitleSearchApp()
         folder = mock.Mock(spec=Input)
         folder.value = "  "
-        app.query_one = mock.Mock(return_value=folder)
+        log = mock.Mock()
+        app.query_one = mock.Mock(side_effect=lambda selector, *_: {
+            "#folder": folder,
+            "#run-log": log,
+        }[selector])
         app.set_status = mock.Mock()
+        app.notify = mock.Mock()
+        app.run_worker = mock.Mock()
 
-        with self.assertRaises(StopIteration):
-            app.start_scan().send(None)
+        event = mock.Mock()
+        event.button.id = "start"
+        app.on_button_pressed(event)
 
         app.set_status.assert_called_once_with("Enter a library folder path first.")
+        log.write.assert_called_once_with("Enter a library folder path first.")
+        app.notify.assert_called_once_with(
+            "Enter a library folder path first.",
+            title="Folder required",
+            severity="warning",
+        )
         folder.focus.assert_called_once_with()
+        app.run_worker.assert_not_called()
+
+    def test_download_summary_preserves_other_scan_results(self):
+        message = format_run_summary({
+            "videos_found": 4,
+            "ignored_existing": 1,
+            "outputs_created": 2,
+            "downloaded_subtitles": 1,
+            "without_subtitles": 1,
+            "failures": 1,
+            "warnings": 0,
+        })
+
+        self.assertIn("Downloaded 1 subtitle file(s) successfully", message)
+        self.assertIn("2 subtitle file(s) created total", message)
+        self.assertIn("1 existing SRT(s) skipped", message)
+        self.assertIn("1 video(s) still without subtitles", message)
+        self.assertIn("1 issue(s)", message)
+
+    def test_download_confirmation_updates_status_and_logs_path(self):
+        class AsyncLines:
+            def __init__(self, lines):
+                self.lines = iter(lines)
+
+            async def readline(self):
+                return next(self.lines, b"")
+
+        app = TitleSearchApp()
+        path = "C:/Movies/Example/Example.en.srt"
+        app.process = SimpleNamespace(
+            stdout=AsyncLines([f"Downloaded successfully: {path}\n".encode()]),
+            stdin=mock.Mock(),
+        )
+        app.set_status = mock.Mock()
+        app.write_log = mock.Mock()
+
+        with self.assertRaises(StopIteration):
+            app.consume_process_output().send(None)
+
+        app.set_status.assert_called_once_with("Subtitle downloaded successfully.")
+        app.write_log.assert_called_once_with(f"Downloaded successfully: {path}")
+
+    def test_scan_indicator_animates_and_can_be_hidden(self):
+        indicator = ScanIndicator()
+        indicator.update = mock.Mock()
+
+        indicator.start_scanning()
+        first_frame = indicator.update.call_args.args[0]
+        indicator._advance()
+        next_frame = indicator.update.call_args.args[0]
+
+        self.assertTrue(indicator.display)
+        self.assertNotEqual(str(first_frame), str(next_frame))
+        indicator.stop_scanning()
+        self.assertFalse(indicator.display)
+
+    def test_scan_ui_locks_configuration_and_leaves_cancel_enabled(self):
+        app = TitleSearchApp()
+        selectors = (
+            "#folder", "#style-select", "#max-downloads", "#recursive",
+            "#transcribe", "#start", "#credentials", "#clear", "#cancel",
+        )
+        widgets = {selector: mock.Mock(disabled=False) for selector in selectors}
+        indicator = mock.Mock(spec=ScanIndicator)
+        widgets["#scan-indicator"] = indicator
+        app.query_one = mock.Mock(side_effect=lambda selector, *_: widgets[selector])
+
+        app.set_scanning_ui(True)
+
+        self.assertTrue(all(widgets[selector].disabled for selector in selectors[:-1]))
+        self.assertFalse(widgets["#cancel"].disabled)
+        indicator.start_scanning.assert_called_once_with()
+
+        app.set_scanning_ui(False)
+
+        self.assertTrue(all(not widgets[selector].disabled for selector in selectors[:-1]))
+        self.assertTrue(widgets["#cancel"].disabled)
+        indicator.stop_scanning.assert_called_once_with()
+
+    def test_cancel_scan_terminates_process_and_reports_status(self):
+        app = TitleSearchApp()
+        process = SimpleNamespace(returncode=None, terminate=mock.Mock())
+        app.process = process
+        app._scan_active = True
+        app.set_status = mock.Mock()
+        app.write_log = mock.Mock()
+
+        app.cancel_scan()
+
+        self.assertTrue(app._cancel_requested)
+        process.terminate.assert_called_once_with()
+        app.set_status.assert_called_once_with("Stopping scan…")
+        app.write_log.assert_called_once_with("Cancel requested.")
 
     def test_subprocess_startup_failure_is_reported_and_controls_reenabled(self):
         async def fail_launch(*args, **kwargs):
@@ -82,6 +191,7 @@ class TitleSearchTuiTests(unittest.TestCase):
             start = mock.Mock(disabled=False)
             cancel = mock.Mock(disabled=True)
             log = mock.Mock()
+            indicator = mock.Mock(spec=ScanIndicator)
             widgets = {
                 "#folder": folder,
                 "#max-downloads": max_downloads,
@@ -89,7 +199,10 @@ class TitleSearchTuiTests(unittest.TestCase):
                 "#recursive": recursive,
                 "#transcribe": transcribe,
                 "#start": start,
+                "#credentials": mock.Mock(disabled=False),
+                "#clear": mock.Mock(disabled=False),
                 "#cancel": cancel,
+                "#scan-indicator": indicator,
                 "#run-log": log,
             }
             app.query_one = mock.Mock(side_effect=lambda selector, *_: widgets[selector])
@@ -151,6 +264,10 @@ class TitleSearchTuiTests(unittest.TestCase):
         screen.action_skip()
 
         screen.dismiss.assert_called_once_with(None)
+
+    def test_candidate_picker_keeps_cancel_and_quit_available(self):
+        self.assertIn(("ctrl+c", "cancel_scan", "Cancel scan"), CandidateScreen.BINDINGS)
+        self.assertIn(("ctrl+q", "quit_app", "Quit app"), CandidateScreen.BINDINGS)
 
     def test_run_summary_calls_out_when_every_movie_already_has_srt(self):
         message = format_run_summary({

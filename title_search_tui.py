@@ -49,9 +49,16 @@ def format_run_summary(summary: dict) -> str:
         return "No video files were found in the selected folder."
     if ignored == videos:
         return f"All {videos} video(s) already have matching .srt files. Nothing to do."
+    downloaded = int(summary.get("downloaded_subtitles", 0))
     outputs = int(summary.get("outputs_created", 0))
     without_subtitles = int(summary.get("without_subtitles", 0))
     issues = int(summary.get("failures", 0)) + int(summary.get("warnings", 0))
+    if downloaded:
+        return (
+            f"Downloaded {downloaded} subtitle file(s) successfully; "
+            f"{outputs} subtitle file(s) created total; {ignored} existing SRT(s) skipped; "
+            f"{without_subtitles} video(s) still without subtitles; {issues} issue(s)."
+        )
     return (
         f"Scan complete: {videos} video(s); {ignored} already had .srt files; "
         f"{outputs} subtitle file(s) created; {without_subtitles} without subtitles; "
@@ -128,7 +135,11 @@ class CredentialScreen(ModalScreen[dict | None]):
 class CandidateScreen(ModalScreen[int | None]):
     """Keyboard picker for subtitle releases returned by the CLI engine."""
 
-    BINDINGS = [("escape", "skip", "Skip movie")]
+    BINDINGS = [
+        ("escape", "skip", "Skip movie"),
+        ("ctrl+c", "cancel_scan", "Cancel scan"),
+        ("ctrl+q", "quit_app", "Quit app"),
+    ]
 
     CSS = """
     CandidateScreen { align: center middle; background: $background 80%; }
@@ -136,7 +147,7 @@ class CandidateScreen(ModalScreen[int | None]):
     #candidate-title { color: #f3c76a; text-style: bold; height: auto; margin-bottom: 1; }
     #candidate-warning { color: #ffbf69; height: auto; margin-bottom: 1; }
     #candidate-list { height: 1fr; border: round #496c54; }
-    #candidate-help { color: #b9c9bd; height: 1; margin-top: 1; }
+    #candidate-help { color: #b9c9bd; height: 2; margin-top: 1; }
     """
 
     def __init__(self, payload: dict, **kwargs):
@@ -175,13 +186,69 @@ class CandidateScreen(ModalScreen[int | None]):
             for index, candidate in enumerate(candidates):
                 options.append(Option(self.format_candidate(index, candidate)))
             yield OptionList(*options, id="candidate-list", markup=False)
-            yield Static("↑ / ↓ move   Enter choose   Esc skip this movie", id="candidate-help")
+            yield Static("↑ / ↓ move   Enter choose   Esc skip\nCtrl+C cancel scan   Ctrl+Q quit", id="candidate-help")
 
     def on_option_list_option_selected(self, event: OptionList.OptionSelected) -> None:
         self.dismiss(event.option_index + 1)
 
     def action_skip(self) -> None:
         self.dismiss(None)
+
+    def action_cancel_scan(self) -> None:
+        self.app.cancel_scan()
+        self.dismiss(None)
+
+    async def action_quit_app(self) -> None:
+        self.dismiss(None)
+        await self.app.action_quit_app()
+
+
+class ScanIndicator(Static):
+    """Animated, non-numeric scan activity display."""
+
+    MESSAGES = (
+        "THE REELS ARE TURNING",
+        "CHECKING TITLES AND YEARS",
+        "MATCHING FRAME RATES",
+        "SEARCHING SUBTITLE RELEASES",
+        "CATALOGING YOUR LIBRARY",
+    )
+    TRACK_LENGTH = 18
+
+    def __init__(self, **kwargs):
+        super().__init__("", **kwargs)
+        self._frame = 0
+
+    def on_mount(self) -> None:
+        self.set_interval(0.18, self._advance)
+
+    def start_scanning(self) -> None:
+        self._frame = 0
+        self.display = True
+        self._render_frame()
+
+    def stop_scanning(self) -> None:
+        self.display = False
+
+    def _advance(self) -> None:
+        if self.display:
+            self._frame += 1
+            self._render_frame()
+
+    def _render_frame(self) -> None:
+        text = Text()
+        text.append("  ✦  ", style="bold #f3c76a")
+        text.append(self.MESSAGES[(self._frame // 9) % len(self.MESSAGES)], style="bold #f3c76a")
+        text.append("  ✦\n  [", style="#b9c9bd")
+        travel = self.TRACK_LENGTH * 2 - 2
+        position = self._frame % travel
+        if position >= self.TRACK_LENGTH:
+            position = travel - position
+        text.append("━" * position, style="#496c54")
+        text.append("◆", style="bold #e7bd61")
+        text.append("━" * (self.TRACK_LENGTH - position - 1), style="#496c54")
+        text.append("]  Working through the collection…", style="#b9c9bd")
+        self.update(text)
 
 
 class TitleSearchApp(App[None]):
@@ -212,6 +279,7 @@ class TitleSearchApp(App[None]):
     #actions { height: 3; margin-top: 1; }
     #actions Button { margin-right: 1; }
     #run-status { height: 1; color: #e7bd61; margin-top: 1; }
+    #scan-indicator { display: none; height: 4; border: round #d5a443; background: #10271c; padding: 0 1; margin-top: 1; }
     #run-log { height: 1fr; min-height: 7; border: round #315b42; background: #091810; margin-top: 1; padding: 0 1; scrollbar-color: #547d5d; }
     Button { background: #183b27; color: #e5eee7; border: round #496c54; }
     Button.-primary { background: #c3943e; color: #10180f; text-style: bold; }
@@ -225,6 +293,8 @@ class TitleSearchApp(App[None]):
         self._run_summary: dict | None = None
         self._credentials: dict | None = None
         self._credential_mode = "normal"
+        self._scan_active = False
+        self._cancel_requested = False
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -255,6 +325,7 @@ class TitleSearchApp(App[None]):
                 yield Button("Clear activity", id="clear")
                 yield Button("Cancel scan", id="cancel", disabled=True)
             yield Static("Ready. Choose a library folder and start a scan.", id="run-status")
+            yield ScanIndicator(id="scan-indicator")
             yield RichLog(id="run-log", markup=False, wrap=True, auto_scroll=True)
         yield Footer()
 
@@ -309,6 +380,10 @@ class TitleSearchApp(App[None]):
             self.cancel_scan()
 
     def launch_scan(self) -> None:
+        if self._scan_active:
+            return
+        if not self._require_folder_path():
+            return
         self.run_worker(
             self.start_scan(),
             name="scan",
@@ -319,29 +394,62 @@ class TitleSearchApp(App[None]):
     def action_start_scan(self) -> None:
         self.launch_scan()
 
+    def _require_folder_path(self) -> str | None:
+        """Validate the path before scheduling a scan and make errors visible."""
+        raw_path = self.query_one("#folder", Input).value.strip()
+        if raw_path:
+            return raw_path
+        message = "Enter a library folder path first."
+        self.set_status(message)
+        self.write_log(message)
+        self.notify(message, title="Folder required", severity="warning")
+        self.query_one("#folder", Input).focus()
+        return None
+
     async def edit_credentials(self) -> None:
         if await self.ask_credentials():
             self.set_status("Credential choices saved for this run.")
 
     async def action_quit_app(self) -> None:
+        self._cancel_requested = self._scan_active
         if self.process and self.process.returncode is None:
             self.process.terminate()
         self.exit()
 
     def cancel_scan(self) -> None:
+        if not self._scan_active:
+            return
+        self._cancel_requested = True
         if self.process and self.process.returncode is None:
             self.process.terminate()
-            self.set_status("Stopping scan…")
-            self.write_log("Cancel requested.")
+        self.set_status("Stopping scan…")
+        self.write_log("Cancel requested.")
+
+    def set_scanning_ui(self, scanning: bool) -> None:
+        for selector in (
+            "#folder",
+            "#style-select",
+            "#max-downloads",
+            "#recursive",
+            "#transcribe",
+            "#start",
+            "#credentials",
+            "#clear",
+        ):
+            self.query_one(selector).disabled = scanning
+        self.query_one("#cancel", Button).disabled = not scanning
+        indicator = self.query_one("#scan-indicator", ScanIndicator)
+        if scanning:
+            indicator.start_scanning()
+        else:
+            indicator.stop_scanning()
 
     async def start_scan(self) -> None:
         if self.process and self.process.returncode is None:
             self.set_status("A scan is already running.")
             return
-        raw_path = self.query_one("#folder", Input).value.strip()
-        if not raw_path:
-            self.set_status("Enter a library folder path first.")
-            self.query_one("#folder", Input).focus()
+        raw_path = self._require_folder_path()
+        if raw_path is None:
             return
         folder = normalize_folder_path(raw_path)
         try:
@@ -408,9 +516,10 @@ class TitleSearchApp(App[None]):
 
         self.query_one("#run-log", RichLog).clear()
         self._run_summary = None
+        self._scan_active = True
+        self._cancel_requested = False
         self.set_status(f"Scanning {folder} …")
-        self.query_one("#start", Button).disabled = True
-        self.query_one("#cancel", Button).disabled = False
+        self.set_scanning_ui(True)
         self.write_log(f"Title Search · {folder}")
         self.write_log(f"Style: {style}; recursive: {'yes' if recursive else 'no'}; Whisper fallback: {'on' if transcribe else 'off'}")
         try:
@@ -422,9 +531,14 @@ class TitleSearchApp(App[None]):
                 env=env,
                 limit=1024 * 1024,
             )
+            if self._cancel_requested and self.process.returncode is None:
+                self.process.terminate()
             await self.consume_process_output()
             return_code = await self.process.wait()
-            if self._run_summary is not None:
+            if self._cancel_requested:
+                self.set_status("Scan cancelled.")
+                self.write_log("Scan cancelled.")
+            elif self._run_summary is not None:
                 self.set_status(format_run_summary(self._run_summary))
             else:
                 self.set_status("Run complete." if return_code == 0 else f"Run finished with status {return_code}.")
@@ -434,8 +548,8 @@ class TitleSearchApp(App[None]):
             self.write_log(f"Startup error: {exc}")
         finally:
             self.process = None
-            self.query_one("#start", Button).disabled = False
-            self.query_one("#cancel", Button).disabled = True
+            self._scan_active = False
+            self.set_scanning_ui(False)
 
     async def consume_process_output(self) -> None:
         assert self.process and self.process.stdout and self.process.stdin
@@ -449,6 +563,10 @@ class TitleSearchApp(App[None]):
                 except (json.JSONDecodeError, TypeError, ValueError) as exc:
                     self.write_log(f"Could not read scan summary: {exc}")
                 continue
+            if line.startswith("Downloaded successfully:"):
+                self.set_status("Subtitle downloaded successfully.")
+                self.write_log(line)
+                continue
             if line.startswith(MARKER):
                 try:
                     payload = json.loads(line[len(MARKER):])
@@ -458,6 +576,8 @@ class TitleSearchApp(App[None]):
                     await self.process.stdin.drain()
                     continue
                 choice = await self.push_screen_wait(CandidateScreen(payload))
+                if self._cancel_requested:
+                    return
                 self.process.stdin.write((f"{choice or ''}\n").encode("ascii"))
                 await self.process.stdin.drain()
                 if choice:

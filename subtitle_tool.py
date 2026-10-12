@@ -873,6 +873,7 @@ def main():
     if startup_note:
         show(f"OpenSubtitles startup issue: {startup_note}", style="yellow")
     download_attempts = 0
+    successful_downloads = 0
     report = []
     stop_reason = None
     if key and not api_active:
@@ -940,8 +941,11 @@ def main():
                                         raise RuntimeError("Downloaded subtitle cues are malformed or extend well beyond the video runtime")
                                     written = write_subtitle(video, data, sdh=hearing)
                                     if written:
-                                        row["outputs"].append(str(written.resolve()))
+                                        written_path = str(written.resolve())
+                                        row["outputs"].append(written_path)
                                         downloaded += 1
+                                        successful_downloads += 1
+                                        print(f"Downloaded successfully: {written_path}", flush=True)
                             else:
                                 row["notes"].append(f"User skipped the {'SDH' if hearing else 'standard'} candidate list.")
                     if not any_candidates:
@@ -960,8 +964,11 @@ def main():
                                 raise RuntimeError("Downloaded subtitle cues are malformed or extend well beyond the video runtime")
                             written = write_subtitle(video, data, sdh=hearing)
                             if written:
-                                row["outputs"].append(str(written.resolve()))
+                                written_path = str(written.resolve())
+                                row["outputs"].append(written_path)
                                 downloaded += 1
+                                successful_downloads += 1
+                                print(f"Downloaded successfully: {written_path}", flush=True)
                     else:
                         row["notes"].append("User skipped the candidate list.")
                 else:
@@ -1072,6 +1079,7 @@ def main():
         "videos_found": len(videos),
         "ignored_existing": ignored_existing,
         "outputs_created": outputs_created,
+        "downloaded_subtitles": successful_downloads,
         "without_subtitles": sum(not row["outputs"] and row["status"] not in failures for row in report),
         "failures": sum(row["status"] in failures for row in report),
         "warnings": len(scan_warnings),
