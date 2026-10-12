@@ -92,6 +92,7 @@ def api_error_message(exc):
 
 
 API = "https://api.opensubtitles.com/api/v1"
+TUI_SUMMARY_MARKER = "TITLE_SEARCH_SUMMARY:"
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm"}
 CHUNK = 65536
 FREE_ACCOUNT_DAILY_CAP = 10
@@ -508,11 +509,17 @@ def login(key: str) -> tuple[str | None, str, dict]:
     credentials = load_credentials()
     user = os.getenv("OPENSUBTITLES_USERNAME") or credentials.get("username")
     password = os.getenv("OPENSUBTITLES_PASSWORD") or credentials.get("password")
+    if os.getenv("TITLE_SEARCH_FORCE_SEARCH_ONLY") == "1":
+        return None, API, {}
     if not user:
+        if os.getenv("TITLE_SEARCH_TUI_CHILD") == "1":
+            return None, API, {}
         user = input("OpenSubtitles username (blank for search-only): ").strip()
     if not user:
         return None, API, {}
     if password is None:
+        if os.getenv("TITLE_SEARCH_TUI_CHILD") == "1":
+            raise RuntimeError("OpenSubtitles password was not provided in the TUI credentials screen")
         password = getpass.getpass("OpenSubtitles password: ")
     raw, _ = request(f"{API}/login", method="POST",
                      data=json.dumps({"username": user, "password": password}).encode(),
@@ -582,6 +589,7 @@ def select_result(items, path: Path, search_kind: str, source_fps=None):
     if title_search:
         show("Title fallback (not an exact file match): verify the movie title and year before choosing.", style="yellow")
     candidate_table = Table(title="Subtitle candidates") if console else None
+    tui_candidates = []
     if candidate_table:
         for heading in ("#", "Release", "FPS", "Language", "Type", "Downloads"):
             candidate_table.add_column(heading)
@@ -601,6 +609,13 @@ def select_result(items, path: Path, search_kind: str, source_fps=None):
         release = identity + str(a.get("release", "(release unknown)"))
         sub_type = "SDH" if a.get("hearing_impaired") else "Standard"
         downloads = str(a.get("download_count", 0))
+        tui_candidates.append({
+            "release": release,
+            "fps": fps,
+            "language": lang,
+            "type": sub_type,
+            "downloads": downloads,
+        })
         if candidate_table:
             fps_style = "red" if "MISMATCH" in fps else ("green" if "matches video" in fps else "yellow")
             candidate_table.add_row(str(i), release,
@@ -611,6 +626,12 @@ def select_result(items, path: Path, search_kind: str, source_fps=None):
             print(f"  {i}. {release} | {fps} | language {lang} (English; US locale not distinguished by catalog) | {sub_type.lower()} | downloads {downloads}")
     if candidate_table:
         console.print(candidate_table)
+    if os.getenv("TITLE_SEARCH_TUI_CHILD") == "1":
+        print("TITLE_SEARCH_CANDIDATES:" + json.dumps({
+            "items": tui_candidates,
+            "title_search": title_search,
+            "movie": path.name,
+        }), flush=True)
     while True:
         try:
             prompt = ("Choose a result only after checking its movie title/year, or Enter to skip: "
@@ -744,6 +765,12 @@ def preflight(transcribe_missing: bool) -> list[str]:
     return problems
 
 
+def emit_tui_summary(summary: dict) -> None:
+    """Send a compact machine-readable completion summary to the Textual UI."""
+    if os.getenv("TITLE_SEARCH_TUI_CHILD") == "1":
+        print(f"{TUI_SUMMARY_MARKER}{json.dumps(summary, separators=(',', ':'))}", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("folder", nargs="?", type=Path, help="folder to scan (prompted for when omitted)")
@@ -789,6 +816,8 @@ def main():
         show(f"Warning: {warning}", style="yellow")
     if not videos:
         show(f"No supported video files found in {root} or its subfolders.", style="yellow")
+        emit_tui_summary({"videos_found": 0, "ignored_existing": 0, "outputs_created": 0,
+                          "without_subtitles": 0, "failures": 0, "warnings": len(scan_warnings)})
         return 1 if scan_warnings else 0
     if console:
         console.print(Panel.fit(
@@ -803,9 +832,11 @@ def main():
     except (OSError, RuntimeError) as exc:
         print(f"Could not load API credentials: {exc}", file=sys.stderr)
         return 2
-    key = os.getenv("OPENSUBTITLES_API_KEY") or credentials.get("api_key")
+    key = None if os.getenv("TITLE_SEARCH_DISABLE_API") == "1" else (
+        os.getenv("OPENSUBTITLES_API_KEY") or credentials.get("api_key")
+    )
     startup_note = None
-    if not key:
+    if not key and os.getenv("TITLE_SEARCH_TUI_CHILD") != "1":
         try:
             key = getpass.getpass("OpenSubtitles API key (blank to use local transcription only): ")
         except EOFError:
@@ -1031,12 +1062,40 @@ def main():
                 print(f"  Note: {note}")
     failures = {"API error", "API unavailable", "File access error", "Media error", "File or download error",
                 "File or processing error", "Completed with API issue"}
+    ignored_existing = sum(row["status"] == "Ignored (existing SRT)" for row in report)
+    outputs_created = sum(
+        len(row["outputs"])
+        for row in report
+        if row["status"] != "Ignored (existing SRT)"
+    )
+    emit_tui_summary({
+        "videos_found": len(videos),
+        "ignored_existing": ignored_existing,
+        "outputs_created": outputs_created,
+        "without_subtitles": sum(not row["outputs"] and row["status"] not in failures for row in report),
+        "failures": sum(row["status"] in failures for row in report),
+        "warnings": len(scan_warnings),
+    })
     return 1 if scan_warnings or any(row["status"] in failures for row in report) else 0
+
+
+def launch_tui(initial_folder: str = ""):
+    try:
+        from title_search_tui import TitleSearchApp
+    except ImportError as exc:
+        print("The full-screen interface needs Textual. Install project dependencies with: python -m pip install -r requirements.txt", file=sys.stderr)
+        print(f"Details: {exc}", file=sys.stderr)
+        raise SystemExit(2)
+    TitleSearchApp(initial_folder=initial_folder).run()
 
 
 if __name__ == "__main__":
     try:
-        raise SystemExit(main())
+        if "--cli" in sys.argv[1:]:
+            sys.argv.remove("--cli")
+            raise SystemExit(main())
+        initial = sys.argv[1] if len(sys.argv) > 1 and not sys.argv[1].startswith("-") else ""
+        launch_tui(initial)
     except KeyboardInterrupt:
         print("Interrupted by user.", file=sys.stderr)
         raise SystemExit(130)

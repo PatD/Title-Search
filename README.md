@@ -2,11 +2,13 @@
 
 This tool was developed with OpenAI Codex.
 
-`subtitle_tool.py` creates external SRT sidecars for Plex and Jellyfin. It scans
-a folder you choose and all its subfolders by default, leaves the movie files
-untouched, and never overwrites an existing subtitle. Each SRT is saved in the
-same folder as its movie. Output uses the shared naming form `Movie.en.srt` (standard
-English) or `Movie.en.sdh.srt` (English SDH).
+**Title Search** creates external SRT sidecars for Plex and Jellyfin. Its
+full-screen, keyboard-driven interface uses a dark green and amber palette. It
+runs on Windows, macOS, and Linux in a terminal with Python 3.10+ installed. It scans
+a folder you choose and all its subfolders by default, leaves movie files
+untouched, and never overwrites an existing subtitle. Each SRT is saved beside
+its movie as `Movie.en.srt` (standard English) or `Movie.en.sdh.srt` (English
+SDH).
 
 Before searching, it skips a movie when a same-folder SRT has the same basename
 (`Movie.srt`, `Movie.en.srt`, `Movie.en.sdh.srt`, etc.) and prints which file
@@ -28,10 +30,8 @@ timing and track language metadata directly.
 ## Requirements
 
 - Python 3.10 or newer.
-- For the polished welcome prompt, tables, and colored status indicators,
-  install Rich in the same Python environment used to run the tool:
-  `python -m pip install -r requirements.txt`. The script still runs with plain
-  console output if Rich is not installed.
+- Install the interface and console dependencies in the Python environment
+  used to run the tool: `python -m pip install -r requirements.txt`.
 - To download existing subtitles: an OpenSubtitles.com account and API key.
   Create the account at [OpenSubtitles](https://www.opensubtitles.com/en), then
   create an API key from your account profile as described in their
@@ -55,22 +55,25 @@ timing and track language metadata directly.
 
 ## Examples
 
-Run the script without a folder argument to enter a local folder path when
-prompted. Press Enter without entering a path to quit. The tool searches the
-selected folder and its subfolders for supported video files and reports when
-none are found.
+Launch the full-screen TUI with `python .\subtitle_tool.py`. Use Tab and the
+arrow keys to move between controls, Enter to activate buttons or choose a
+subtitle, and Ctrl+Q to quit. In the movie picker, press S or Esc to skip a
+candidate list. You may pass a folder path to prefill the library field.
 
 ```powershell
-python -m pip install rich
+python -m pip install -r requirements.txt
 Copy-Item .\subtitle_credentials.example.json .\subtitle_credentials.json
 notepad .\subtitle_credentials.json
 python .\subtitle_tool.py
 python .\subtitle_tool.py "C:\Movies"
-python .\subtitle_tool.py "D:\Library" --recursive --style both
-python .\subtitle_tool.py "D:\Library" --max-downloads 4
-python .\subtitle_tool.py "D:\Library" --transcribe-missing
-python .\subtitle_tool.py "D:\Library" --transcribe-missing --model medium
+python .\subtitle_tool.py --cli "D:\Library" --recursive --style both
+python .\subtitle_tool.py --cli "D:\Library" --max-downloads 4
+python .\subtitle_tool.py --cli "D:\Library" --transcribe-missing
+python .\subtitle_tool.py --cli "D:\Library" --transcribe-missing --model medium
 ```
+
+The TUI is the default. Add `--cli` to use the original console workflow and
+its command-line options directly.
 
 The default style is standard English. `--style sdh` prefers hearing-impaired
 captions; `--style both` offers each type when available. `--transcribe-missing`
@@ -105,10 +108,11 @@ The run exits with status 1 when it encounters actionable scan or processing
 errors, status 2 for startup/configuration errors, and status 130 when
 interrupted. A clean run, including one with no matches, exits with status 0.
 
-When Rich is installed, movie metadata appears in a compact panel, subtitle
-candidates appear in a table with frame-rate matches and mismatches highlighted,
-and the final report is a table. Candidate selection remains numbered and
-interactive.
+In the TUI, candidate releases are presented in a keyboard-navigable picker,
+including the catalog FPS comparison, language, caption type, and download
+count. Green FPS indicates a match, amber a mismatch, and muted gold unknown
+FPS. The activity panel streams the scan and final report. Use `--cli` for the
+original Rich console tables and numbered candidate selection.
 
 Run the resilience tests with `python -m unittest discover -s tests -v`.
 
