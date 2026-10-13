@@ -1,3 +1,4 @@
 # API-only subtitle downloads; no Whisper or local transcription dependencies.
-rich>=13.7,<16
+# Textual 8.2 requires Rich 14.2 or newer.
+rich>=14.2,<16
 textual>=8.2,<9
