@@ -32,6 +32,7 @@ from subtitle_tool import FREE_ACCOUNT_DAILY_CAP, load_credentials
 
 MARKER = "TITLE_SEARCH_CANDIDATES:"
 SUMMARY_MARKER = "TITLE_SEARCH_SUMMARY:"
+QUOTA_MARKER = "TITLE_SEARCH_QUOTA:"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 CLI_SCRIPT = Path(__file__).with_name("subtitle_tool.py")
 
@@ -48,7 +49,7 @@ def format_run_summary(summary: dict) -> str:
     if videos == 0:
         return "No video files were found in the selected folder."
     if ignored == videos:
-        return f"All {videos} video(s) already have matching .srt files. Nothing to do."
+        return f"Found {videos} video(s); all already had matching .srt subtitle files."
     downloaded = int(summary.get("downloaded_subtitles", 0))
     outputs = int(summary.get("outputs_created", 0))
     without_subtitles = int(summary.get("without_subtitles", 0))
@@ -64,6 +65,28 @@ def format_run_summary(summary: dict) -> str:
         f"{outputs} subtitle file(s) created; {without_subtitles} without subtitles; "
         f"{issues} issue(s)."
     )
+
+
+def format_quota_status(quota: dict) -> str:
+    """Describe account allowance without implying scans consume downloads."""
+    remaining = quota.get("remaining_downloads")
+    limit = quota.get("daily_limit")
+    account = quota.get("account", "OpenSubtitles account")
+    if remaining is None:
+        return f"OpenSubtitles allowance couldn't be verified ({account}). Scanning does not use download quota."
+    remaining = max(0, int(remaining))
+    if limit is not None:
+        allowance = f"{remaining} of {int(limit)} daily subtitle downloads remain"
+    else:
+        allowance = f"{remaining} subtitle download(s) remain"
+    if remaining == 0:
+        return f"OpenSubtitles: {allowance}. Downloads may resume when the allowance resets; scans still work."
+    per_run = max(1, int(quota.get("per_run_cap", 1)))
+    runs, partial = divmod(remaining, per_run)
+    capacity = f"About {runs} full run(s) at the current {per_run}-download cap"
+    if partial:
+        capacity += f", plus {partial} download(s)"
+    return f"OpenSubtitles: {allowance}. {capacity}. Scans themselves are not quota-limited."
 
 
 class CredentialScreen(ModalScreen[dict | None]):
@@ -279,6 +302,7 @@ class TitleSearchApp(App[None]):
     #actions { height: 3; margin-top: 1; }
     #actions Button { margin-right: 1; }
     #run-status { height: 1; color: #e7bd61; margin-top: 1; }
+    #quota-status { height: 2; color: #b9c9bd; border: round #315b42; background: #091810; padding: 0 1; margin-top: 1; }
     #scan-indicator { display: none; height: 4; border: round #d5a443; background: #10271c; padding: 0 1; margin-top: 1; }
     #run-log { height: 1fr; min-height: 7; border: round #315b42; background: #091810; margin-top: 1; padding: 0 1; scrollbar-color: #547d5d; }
     Button { background: #183b27; color: #e5eee7; border: round #496c54; }
@@ -295,6 +319,7 @@ class TitleSearchApp(App[None]):
         self._credential_mode = "normal"
         self._scan_active = False
         self._cancel_requested = False
+        self._quota_info: dict | None = None
 
     def compose(self) -> ComposeResult:
         yield Header()
@@ -325,6 +350,7 @@ class TitleSearchApp(App[None]):
                 yield Button("Clear activity", id="clear")
                 yield Button("Cancel scan", id="cancel", disabled=True)
             yield Static("Ready. Choose a library folder and start a scan.", id="run-status")
+            yield Static("OpenSubtitles allowance: waiting for account check…", id="quota-status")
             yield ScanIndicator(id="scan-indicator")
             yield RichLog(id="run-log", markup=False, wrap=True, auto_scroll=True)
         yield Footer()
@@ -337,6 +363,26 @@ class TitleSearchApp(App[None]):
 
     def set_status(self, message: str) -> None:
         self.query_one("#run-status", Static).update(message)
+
+    def update_quota_status(self, quota: dict, *, log: bool = True) -> None:
+        self._quota_info = quota
+        message = format_quota_status(quota)
+        self.query_one("#quota-status", Static).update(message)
+        if log:
+            self.write_log(message)
+
+    def show_run_summary(self, summary: dict) -> None:
+        message = format_run_summary(summary)
+        self.set_status(message)
+        videos = int(summary.get("videos_found", 0))
+        ignored = int(summary.get("ignored_existing", 0))
+        if videos > 0 and ignored == videos:
+            self.notify(
+                message,
+                title="All videos already have subtitles",
+                severity="information",
+                timeout=12,
+            )
 
     def credential_values(self) -> dict:
         if self._credentials is not None:
@@ -516,13 +562,15 @@ class TitleSearchApp(App[None]):
 
         self.query_one("#run-log", RichLog).clear()
         self._run_summary = None
+        self._quota_info = None
+        self.query_one("#quota-status", Static).update("OpenSubtitles allowance: checking account…")
         self._scan_active = True
         self._cancel_requested = False
-        self.set_status(f"Scanning {folder} …")
-        self.set_scanning_ui(True)
-        self.write_log(f"Title Search · {folder}")
-        self.write_log(f"Style: {style}; recursive: {'yes' if recursive else 'no'}; Whisper fallback: {'on' if transcribe else 'off'}")
         try:
+            self.set_status(f"Scanning {folder} …")
+            self.set_scanning_ui(True)
+            self.write_log(f"Title Search · {folder}")
+            self.write_log(f"Style: {style}; recursive: {'yes' if recursive else 'no'}; Whisper fallback: {'on' if transcribe else 'off'}")
             self.process = await asyncio.create_subprocess_exec(
                 *command,
                 stdin=asyncio.subprocess.PIPE,
@@ -539,13 +587,16 @@ class TitleSearchApp(App[None]):
                 self.set_status("Scan cancelled.")
                 self.write_log("Scan cancelled.")
             elif self._run_summary is not None:
-                self.set_status(format_run_summary(self._run_summary))
+                self.show_run_summary(self._run_summary)
             else:
                 self.set_status("Run complete." if return_code == 0 else f"Run finished with status {return_code}.")
             self.write_log("\nDone. Press Ctrl+R to run another scan or Ctrl+Q to quit.")
         except (OSError, subprocess.SubprocessError) as exc:
             self.set_status("Could not start the subtitle engine.")
             self.write_log(f"Startup error: {exc}")
+        except Exception as exc:
+            self.set_status("The scan stopped after an unexpected error.")
+            self.write_log(f"Unexpected scan error: {type(exc).__name__}: {exc}")
         finally:
             self.process = None
             self._scan_active = False
@@ -563,7 +614,21 @@ class TitleSearchApp(App[None]):
                 except (json.JSONDecodeError, TypeError, ValueError) as exc:
                     self.write_log(f"Could not read scan summary: {exc}")
                 continue
+            if line.startswith(QUOTA_MARKER):
+                try:
+                    quota = json.loads(line[len(QUOTA_MARKER):])
+                    if isinstance(quota, dict):
+                        self.update_quota_status(quota)
+                    else:
+                        raise ValueError("quota payload must be an object")
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    self.write_log(f"Could not read OpenSubtitles allowance: {exc}")
+                continue
             if line.startswith("Downloaded successfully:"):
+                if self._quota_info and self._quota_info.get("remaining_downloads") is not None:
+                    updated = dict(self._quota_info)
+                    updated["remaining_downloads"] = max(0, int(updated["remaining_downloads"]) - 1)
+                    self.update_quota_status(updated, log=False)
                 self.set_status("Subtitle downloaded successfully.")
                 self.write_log(line)
                 continue
@@ -589,6 +654,14 @@ class TitleSearchApp(App[None]):
             line = line.replace("Choose a result only after checking its movie title/year, or Enter to skip:", "")
             if line.strip():
                 self.write_log(line)
+                if "HTTP 429" in line or "rate or download limit reached" in line:
+                    self.set_status("OpenSubtitles rejected a request (HTTP 429); check the allowance and try later.")
+                    self.notify(
+                        "OpenSubtitles returned HTTP 429. The request rate or download allowance may be exhausted.",
+                        title="OpenSubtitles limit response",
+                        severity="warning",
+                        timeout=12,
+                    )
 
 
 def run_tui(initial_folder: str = "") -> None:

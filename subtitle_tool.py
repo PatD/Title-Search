@@ -93,6 +93,7 @@ def api_error_message(exc):
 
 API = "https://api.opensubtitles.com/api/v1"
 TUI_SUMMARY_MARKER = "TITLE_SEARCH_SUMMARY:"
+TUI_QUOTA_MARKER = "TITLE_SEARCH_QUOTA:"
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm"}
 CHUNK = 65536
 FREE_ACCOUNT_DAILY_CAP = 10
@@ -560,7 +561,7 @@ def load_credentials() -> dict:
 
 
 def account_limits(key: str, token: str | None, api_base: str, login_user: dict):
-    """Read the account's current daily quota; return (remaining, description)."""
+    """Read the account's current daily quota; return (remaining, limit, description)."""
     user = dict(login_user)
     if token:
         try:
@@ -572,15 +573,26 @@ def account_limits(key: str, token: str | None, api_base: str, login_user: dict)
             pass
     limit = user.get("allowed_downloads")
     remaining = user.get("remaining_downloads")
+    downloads_count = user.get("downloads_count")
     try:
-        if remaining is None and limit is not None and user.get("downloads_count") is not None:
-            remaining = max(0, int(limit) - int(user["downloads_count"]))
+        limit = int(limit) if limit is not None else None
+        downloads_count = int(downloads_count) if downloads_count is not None else None
+        if remaining is None and limit is not None and downloads_count is not None:
+            remaining = max(0, limit - downloads_count)
         if remaining is not None:
             remaining = max(0, int(remaining))
+        if limit is None and remaining is not None and downloads_count is not None:
+            limit = remaining + downloads_count
     except (TypeError, ValueError, OverflowError):
-        remaining = None
+        remaining = limit = None
     level = user.get("level", "account")
-    return remaining, f"{level}; {remaining} download(s) currently available" if remaining is not None else str(level)
+    if remaining is not None and limit is not None:
+        description = f"{level}; {remaining} of {limit} daily subtitle download(s) remaining"
+    elif remaining is not None:
+        description = f"{level}; {remaining} subtitle download(s) remaining"
+    else:
+        description = str(level)
+    return remaining, limit, description
 
 
 def select_result(items, path: Path, search_kind: str, source_fps=None):
@@ -771,6 +783,12 @@ def emit_tui_summary(summary: dict) -> None:
         print(f"{TUI_SUMMARY_MARKER}{json.dumps(summary, separators=(',', ':'))}", flush=True)
 
 
+def emit_tui_quota(quota: dict) -> None:
+    """Send account quota details to the Textual UI without parsing display text."""
+    if os.getenv("TITLE_SEARCH_TUI_CHILD") == "1":
+        print(f"{TUI_QUOTA_MARKER}{json.dumps(quota, separators=(',', ':'))}", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("folder", nargs="?", type=Path, help="folder to scan (prompted for when omitted)")
@@ -863,13 +881,24 @@ def main():
             startup_note = f"OpenSubtitles login failed: {exc}"
             api_active = False
     try:
-        remaining, account_description = (account_limits(key, token, api_base, login_user)
-                                          if key and api_active else
-                                          (None, "API unavailable" if key else "no API key provided"))
+        remaining, daily_limit, account_description = (
+            account_limits(key, token, api_base, login_user)
+            if key and api_active else
+            (None, None, "API unavailable" if key else "no API key provided")
+        )
     except (TypeError, ValueError, OverflowError):
-        remaining, account_description = None, "quota unavailable"
+        remaining, daily_limit, account_description = None, None, "quota unavailable"
     budget = min(args.max_downloads, remaining) if remaining is not None else args.max_downloads
     show(f"OpenSubtitles account: {account_description}. This run is capped at {budget} download(s).", style="dim")
+    emit_tui_quota({
+        "remaining_downloads": remaining,
+        "daily_limit": daily_limit,
+        "per_run_cap": args.max_downloads,
+        "account": account_description,
+    })
+    quota_exhausted = bool(key and api_active and remaining == 0)
+    if quota_exhausted:
+        show("OpenSubtitles reports no subtitle downloads remaining in the current daily allowance. This scan will check local files without searching for downloads.", style="yellow")
     if startup_note:
         show(f"OpenSubtitles startup issue: {startup_note}", style="yellow")
     download_attempts = 0
@@ -920,7 +949,7 @@ def main():
             print(f"{video.name}: could not display media details: {exc}")
         source_fps = media_info.get("fps")
         downloaded = 0
-        if api_active:
+        if api_active and not quota_exhausted:
             try:
                 matches, search_kind = lookup(video, key, token, args.style, api_base)
                 if args.style == "both":
@@ -1005,6 +1034,9 @@ def main():
                 row["status"] = "API error"
                 api_active = False
                 stop_reason = message
+        elif quota_exhausted:
+            row["notes"].append("OpenSubtitles daily download allowance is exhausted; subtitle search was skipped.")
+            row["status"] = "Download quota exhausted"
         elif not key:
             row["notes"].append("OpenSubtitles credentials were not provided.")
         elif stop_reason:

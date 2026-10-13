@@ -1,6 +1,7 @@
 """Tests for Title Search's Textual interface actions and candidate labels."""
 from __future__ import annotations
 
+import json
 import os
 import subprocess
 import tempfile
@@ -15,6 +16,7 @@ from title_search_tui import (
     CandidateScreen,
     ScanIndicator,
     TitleSearchApp,
+    format_quota_status,
     format_run_summary,
     normalize_folder_path,
 )
@@ -101,6 +103,36 @@ class TitleSearchTuiTests(unittest.TestCase):
         self.assertIn("1 existing SRT(s) skipped", message)
         self.assertIn("1 video(s) still without subtitles", message)
         self.assertIn("1 issue(s)", message)
+
+    def test_quota_status_estimates_download_batches_and_separates_scans(self):
+        message = format_quota_status({
+            "remaining_downloads": 23,
+            "daily_limit": 30,
+            "per_run_cap": 10,
+            "account": "VIP",
+        })
+
+        self.assertIn("23 of 30 daily subtitle downloads remain", message)
+        self.assertIn("About 2 full run(s)", message)
+        self.assertIn("plus 3 download(s)", message)
+        self.assertIn("Scans themselves are not quota-limited", message)
+
+    def test_quota_status_reports_exhaustion_and_unavailable_account(self):
+        exhausted = format_quota_status({
+            "remaining_downloads": 0,
+            "daily_limit": 10,
+            "per_run_cap": 10,
+            "account": "Free",
+        })
+        unavailable = format_quota_status({
+            "remaining_downloads": None,
+            "account": "API unavailable",
+        })
+
+        self.assertIn("0 of 10 daily subtitle downloads remain", exhausted)
+        self.assertIn("scans still work", exhausted)
+        self.assertIn("couldn't be verified", unavailable)
+        self.assertIn("API unavailable", unavailable)
 
     def test_download_confirmation_updates_status_and_logs_path(self):
         class AsyncLines:
@@ -204,6 +236,7 @@ class TitleSearchTuiTests(unittest.TestCase):
                 "#cancel": cancel,
                 "#scan-indicator": indicator,
                 "#run-log": log,
+                "#quota-status": mock.Mock(),
             }
             app.query_one = mock.Mock(side_effect=lambda selector, *_: widgets[selector])
             app.set_status = mock.Mock()
@@ -223,6 +256,90 @@ class TitleSearchTuiTests(unittest.TestCase):
         ))
         self.assertFalse(start.disabled)
         self.assertTrue(cancel.disabled)
+
+    def test_repeated_scan_after_unexpected_error_restores_ui(self):
+        class AsyncLines:
+            def __init__(self, lines):
+                self.lines = iter(lines)
+
+            async def readline(self):
+                return next(self.lines, b"")
+
+        class FakeProcess:
+            def __init__(self):
+                summary = {
+                    "videos_found": 1,
+                    "ignored_existing": 0,
+                    "outputs_created": 1,
+                    "downloaded_subtitles": 1,
+                    "without_subtitles": 0,
+                    "failures": 0,
+                    "warnings": 0,
+                }
+                self.stdout = AsyncLines([
+                    ("TITLE_SEARCH_SUMMARY:" + json.dumps(summary) + "\n").encode()
+                ])
+                self.stdin = mock.Mock()
+                self.returncode = None
+
+            async def wait(self):
+                self.returncode = 0
+                return self.returncode
+
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as folder_path:
+            app = TitleSearchApp()
+            folder = mock.Mock(spec=Input, value=folder_path)
+            start = mock.Mock(disabled=False)
+            cancel = mock.Mock(disabled=True)
+            indicator = mock.Mock(spec=ScanIndicator)
+            widgets = {
+                "#folder": folder,
+                "#max-downloads": mock.Mock(value="5"),
+                "#style-select": mock.Mock(value="standard"),
+                "#recursive": mock.Mock(value=True),
+                "#transcribe": mock.Mock(value=False),
+                "#start": start,
+                "#credentials": mock.Mock(disabled=False),
+                "#clear": mock.Mock(disabled=False),
+                "#cancel": cancel,
+                "#scan-indicator": indicator,
+                "#run-log": mock.Mock(),
+                "#quota-status": mock.Mock(),
+            }
+            app.query_one = mock.Mock(side_effect=lambda selector, *_: widgets[selector])
+            app.set_status = mock.Mock()
+            app.write_log = mock.Mock()
+            app._credentials = {"api_key": "test-key", "username": "", "password": ""}
+            launches = 0
+
+            async def create_process(*args, **kwargs):
+                nonlocal launches
+                launches += 1
+                if launches == 1:
+                    raise RuntimeError("temporary worker failure")
+                return FakeProcess()
+
+            with mock.patch("title_search_tui.asyncio.create_subprocess_exec", new=create_process):
+                with self.assertRaises(StopIteration):
+                    app.start_scan().send(None)
+
+                self.assertFalse(app._scan_active)
+                self.assertFalse(start.disabled)
+                self.assertTrue(cancel.disabled)
+                self.assertTrue(any(
+                    call.args == ("Unexpected scan error: RuntimeError: temporary worker failure",)
+                    for call in app.write_log.call_args_list
+                ))
+
+                with self.assertRaises(StopIteration):
+                    app.start_scan().send(None)
+
+        self.assertEqual(launches, 2)
+        self.assertFalse(app._scan_active)
+        self.assertFalse(start.disabled)
+        self.assertTrue(cancel.disabled)
+        self.assertEqual(indicator.start_scanning.call_count, 2)
+        self.assertEqual(indicator.stop_scanning.call_count, 2)
 
     def test_candidate_label_includes_release_fps_language_and_match_style(self):
         label = CandidateScreen.format_candidate(0, {
@@ -281,7 +398,7 @@ class TitleSearchTuiTests(unittest.TestCase):
 
         self.assertEqual(
             message,
-            "All 4 video(s) already have matching .srt files. Nothing to do.",
+            "Found 4 video(s); all already had matching .srt subtitle files.",
         )
 
     def test_run_summary_reports_empty_and_partial_scans(self):
