@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Find matching English sidecar subtitles, with optional local Whisper fallback.
+"""Find matching English sidecar subtitles through the OpenSubtitles API.
 
 Usage: python subtitle_tool.py [folder] [--recursive] [--style standard|sdh|both]
 Existing SRTs are never overwritten. Video files are read for their
@@ -8,7 +8,6 @@ OpenSubtitles hash and media metadata; they are never changed.
 from __future__ import annotations
 
 import argparse
-import importlib.util
 import getpass
 import hashlib
 import io
@@ -747,34 +746,11 @@ def scan_videos(root: Path, recursive: bool):
     return sorted(videos), warnings
 
 
-def whisper_fallback(path: Path, model_name: str):
-    try:
-        import whisper
-    except ImportError as exc:
-        raise RuntimeError("Local fallback needs OpenAI Whisper: pip install openai-whisper, plus FFmpeg") from exc
-    model = whisper.load_model(model_name)
-    result = model.transcribe(str(path), language="en", task="transcribe", fp16=False)
-    lines = []
-    for i, seg in enumerate(result.get("segments", []), 1):
-        start = max(0, int(round(seg["start"] * 1000)))
-        end = max(start + 1, int(round(seg["end"] * 1000)))
-        def stamp(ms):
-            h, rem = divmod(ms, 3600000); m, rem = divmod(rem, 60000); s, milli = divmod(rem, 1000)
-            return f"{h:02}:{m:02}:{s:02},{milli:03}"
-        lines.extend([str(i), f"{stamp(start)} --> {stamp(end)}", seg["text"].strip(), ""])
-    return ("\r\n".join(lines) + "\r\n").encode("utf-8")
-
-
-def preflight(transcribe_missing: bool) -> list[str]:
-    """Check dependencies required by the selected features before scanning."""
+def preflight() -> list[str]:
+    """Check required runtime dependencies before scanning."""
     problems = []
     if sys.version_info < (3, 10):
         problems.append("Python 3.10 or newer is required.")
-    if transcribe_missing:
-        if importlib.util.find_spec("whisper") is None:
-            problems.append("Local transcription needs OpenAI Whisper: install with 'python -m pip install openai-whisper'.")
-        if not shutil.which("ffmpeg"):
-            problems.append("Local transcription needs FFmpeg installed and available on PATH.")
     return problems
 
 
@@ -806,8 +782,6 @@ def main():
     parser.add_argument("--style", choices=["standard", "sdh", "both"], default="standard")
     parser.add_argument("--max-downloads", type=int, default=FREE_ACCOUNT_DAILY_CAP,
                         help="maximum subtitle downloads during this run (1-10 conservative free-account cap; default: 10)")
-    parser.add_argument("--transcribe-missing", action="store_true", help="use local Whisper when no downloaded SRT is selected")
-    parser.add_argument("--model", default="small", help="Whisper model for local fallback (default: small)")
     args = parser.parse_args()
     if args.folder is None:
         try:
@@ -819,7 +793,7 @@ def main():
             return 0
         # Accept paths pasted from Windows Explorer, which are often surrounded by quotes.
         args.folder = Path(folder.strip('"'))
-    dependency_problems = preflight(args.transcribe_missing)
+    dependency_problems = preflight()
     if dependency_problems:
         for problem in dependency_problems:
             print(f"Dependency error: {problem}", file=sys.stderr)
@@ -848,8 +822,7 @@ def main():
     if console:
         console.print(Panel.fit(
             f"[bold]{len(videos)} video(s)[/bold] found under [cyan]{root}[/cyan]\n"
-            f"Recursive scan: {'on' if args.recursive else 'off'}  |  Style: {args.style}  |  "
-            f"Local transcription fallback: {'on' if args.transcribe_missing else 'off'}",
+            f"Recursive scan: {'on' if args.recursive else 'off'}  |  Style: {args.style}",
             title="Home Library Subtitles", border_style="cyan"))
     else:
         print(f"Found {len(videos)} video(s) under {root}; recursive scan {'on' if args.recursive else 'off'}; style {args.style}.")
@@ -864,7 +837,7 @@ def main():
     startup_note = None
     if not key and os.getenv("TITLE_SEARCH_TUI_CHILD") != "1":
         try:
-            key = getpass.getpass("OpenSubtitles API key (blank to use local transcription only): ")
+            key = getpass.getpass("OpenSubtitles API key (blank to continue without API search): ")
         except EOFError:
             key = ""
             startup_note = "No interactive input was available; continuing without OpenSubtitles."
@@ -926,9 +899,7 @@ def main():
         except OSError as exc:
             row["notes"].append(f"Could not inspect neighboring subtitle files: {exc}")
             row["status"] = "Media error"
-            if not args.transcribe_missing:
-                continue
-            existing_srt = None
+            continue
         if existing_srt:
             print(f"Ignoring {video.name}: matching subtitle already exists ({existing_srt.name}).")
             row["status"] = "Ignored (existing SRT)"
@@ -1053,20 +1024,6 @@ def main():
             row["notes"].append(f"Not searched because OpenSubtitles is unavailable: {stop_reason}")
             row["api_failed"] = True
             row["status"] = "API unavailable"
-
-        if args.transcribe_missing and not row["outputs"]:
-            try:
-                data = whisper_fallback(video, args.model)
-                if valid_srt(data, media_info.get("duration")):
-                    written = write_subtitle(video, data)
-                    if written:
-                        row["outputs"].append(str(written.resolve()))
-                        row["notes"].append("Generated locally with Whisper; review transcription accuracy.")
-                else:
-                    row["notes"].append("Local transcription returned no valid subtitle cues.")
-            except Exception as exc:
-                print(f"{video.name}: local transcription unavailable: {exc}")
-                row["notes"].append(f"Local transcription error: {exc}")
 
         # Keep one unexpected movie-level problem from aborting the remaining scan.
         if not row["status"] and row["notes"] and any("error" in note.lower() for note in row["notes"]):

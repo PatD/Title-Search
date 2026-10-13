@@ -7,10 +7,12 @@ import os
 import re
 import subprocess
 import sys
+from collections.abc import Iterator
 from pathlib import Path
 
-from textual.app import App, ComposeResult
+from textual.app import App, ComposeResult, SystemCommand
 from textual.containers import Container, Horizontal, Vertical
+from textual.events import Resize
 from textual.screen import ModalScreen
 from textual.widgets import (
     Button,
@@ -36,6 +38,45 @@ QUOTA_MARKER = "TITLE_SEARCH_QUOTA:"
 DOWNLOAD_MARKER = "TITLE_SEARCH_DOWNLOAD:"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 CLI_SCRIPT = Path(__file__).with_name("subtitle_tool.py")
+
+
+class AsciiGradient(Static):
+    """A subtle, resize-aware ASCII texture rendered behind the interface."""
+
+    RAMP = " .,:-=+*#"
+
+    def __init__(self, **kwargs):
+        super().__init__("", markup=False, **kwargs)
+        self._last_size = (0, 0)
+
+    def on_mount(self) -> None:
+        self.refresh_gradient()
+
+    def on_resize(self, event: Resize) -> None:
+        self.refresh_gradient()
+
+    @classmethod
+    def gradient_text(cls, width: int, height: int) -> str:
+        if width < 1 or height < 1:
+            return ""
+        ramp_max = len(cls.RAMP) - 1
+        rows = []
+        for y in range(height):
+            vertical = y / max(1, height - 1)
+            row = []
+            for x in range(width):
+                horizontal = x / max(1, width - 1)
+                level = round((horizontal * 0.72 + vertical * 0.28) * ramp_max)
+                row.append(cls.RAMP[level])
+            rows.append("".join(row))
+        return "\n".join(rows)
+
+    def refresh_gradient(self) -> None:
+        width, height = self.size.width, self.size.height
+        if (width, height) == self._last_size or width < 1 or height < 1:
+            return
+        self._last_size = (width, height)
+        self.update(self.gradient_text(width, height))
 
 
 def normalize_folder_path(value: str) -> Path:
@@ -278,21 +319,28 @@ class ScanIndicator(Static):
 class TitleSearchApp(App[None]):
     """Title Search full-screen TUI."""
 
-    TITLE = "Title Search"
-    SUB_TITLE = "Subtitle Library"
+    TITLE = "Title Search: Read What You Hear"
+    SUB_TITLE = ""
     BINDINGS = [
         ("ctrl+q", "quit_app", "Quit"),
         ("ctrl+r", "start_scan", "Scan library"),
     ]
 
+    def get_system_commands(self, screen) -> Iterator[SystemCommand]:
+        """Keep the useful palette commands but hide screenshot and theme actions."""
+        hidden_commands = {"screenshot", "theme"}
+        yield from (
+            command
+            for command in super().get_system_commands(screen)
+            if command.title.casefold() not in hidden_commands
+        )
+
     CSS = """
-    Screen { background: #07130d; color: #e5eee7; }
+    Screen { layers: backdrop default; background: #111915; color: #e5eee7; }
+    #backdrop { layer: backdrop; position: absolute; width: 100%; height: 100%; color: #27392f; background: transparent; }
     Header { background: #123824; color: #f3c76a; }
     Footer { background: #0c2116; color: #e7bd61; }
     #shell { height: 1fr; padding: 1 2; }
-    #hero { height: 5; border: round #d5a443; background: #10271c; padding: 0 2; margin-bottom: 1; }
-    #brand { color: #f3c76a; text-style: bold; height: 1; }
-    #tagline { color: #b9c9bd; height: 2; }
     .section-title { color: #e7bd61; text-style: bold; margin-top: 1; }
     #folder { margin-top: 1; border: round #496c54; }
     #options { height: 5; margin-top: 1; }
@@ -323,11 +371,9 @@ class TitleSearchApp(App[None]):
         self._quota_info: dict | None = None
 
     def compose(self) -> ComposeResult:
+        yield AsciiGradient(id="backdrop")
         yield Header()
         with Vertical(id="shell"):
-            with Vertical(id="hero"):
-                yield Static("TITLE SEARCH", id="brand")
-                yield Static("Find the right words for your movie library.", id="tagline")
             yield Label("MOVIE LIBRARY", classes="section-title")
             yield Input(
                 value=self.initial_folder,
@@ -344,7 +390,6 @@ class TitleSearchApp(App[None]):
                 yield Input(value=str(FREE_ACCOUNT_DAILY_CAP), placeholder="Max downloads", id="max-downloads")
             with Horizontal(id="toggles"):
                 yield Checkbox("Search subfolders", value=True, id="recursive")
-                yield Checkbox("Transcribe missing subtitles locally", id="transcribe")
             with Horizontal(id="actions"):
                 yield Button("Start scan", variant="primary", id="start")
                 yield Button("Credentials", id="credentials")
@@ -478,7 +523,6 @@ class TitleSearchApp(App[None]):
             "#style-select",
             "#max-downloads",
             "#recursive",
-            "#transcribe",
             "#start",
             "#credentials",
             "#clear",
@@ -530,13 +574,10 @@ class TitleSearchApp(App[None]):
 
         style = self.query_one("#style-select", Select).value
         recursive = self.query_one("#recursive", Checkbox).value
-        transcribe = self.query_one("#transcribe", Checkbox).value
         command = [sys.executable, str(CLI_SCRIPT), "--cli", str(folder),
                    "--style", str(style), "--max-downloads", str(max_downloads)]
         if not recursive:
             command.append("--no-recursive")
-        if transcribe:
-            command.append("--transcribe-missing")
 
         env = os.environ.copy()
         env["TITLE_SEARCH_TUI_CHILD"] = "1"
@@ -571,7 +612,7 @@ class TitleSearchApp(App[None]):
             self.set_status(f"Scanning {folder} …")
             self.set_scanning_ui(True)
             self.write_log(f"Title Search · {folder}")
-            self.write_log(f"Style: {style}; recursive: {'yes' if recursive else 'no'}; Whisper fallback: {'on' if transcribe else 'off'}")
+            self.write_log(f"Style: {style}; recursive: {'yes' if recursive else 'no'}")
             self.process = await asyncio.create_subprocess_exec(
                 *command,
                 stdin=asyncio.subprocess.PIPE,

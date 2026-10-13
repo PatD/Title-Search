@@ -2,7 +2,7 @@
 
 This tool was developed with OpenAI Codex.
 
-Title Search finds or creates external `.srt` subtitles for a movie library. The
+Title Search finds and downloads external `.srt` subtitles for a movie library. The
 sidecar files work with Plex and Jellyfin. The app has a full-screen, keyboard-
 driven Textual interface with a dark green and amber theme, and runs on Windows,
 macOS, and Linux.
@@ -30,9 +30,8 @@ Requirements:
 - Python 3.10 or newer.
 - Internet access and an OpenSubtitles.com API key to search and download
   existing subtitles.
-- FFmpeg and OpenAI Whisper only if you want the optional local transcription
-  fallback. Without `ffprobe`, MP4 metadata is read directly; metadata for other
-  formats may be unverified.
+- `ffprobe` is optional. Without it, MP4 metadata is read directly; metadata for
+  other formats may be unverified. No local speech-recognition software is used.
 
 From a terminal, clone or download this repository and change to its folder.
 Using a virtual environment keeps the app's dependencies separate from other
@@ -115,7 +114,7 @@ In the interface:
 1. Enter the folder that contains your movies. The app searches subfolders by
    default. Windows paths accept either `/` or `\` separators.
 2. Choose Standard English, English SDH, or Offer both. Set the per-run
-   download cap if desired, and optionally enable local transcription.
+   download cap if desired.
 3. Choose **Start scan**. If credentials are missing, enter them in the
    Credentials screen. **Search only** lets you search the catalog without
    downloading; downloads require account credentials.
@@ -141,8 +140,6 @@ python .\subtitle_tool.py --cli "D:\Movies"
 python .\subtitle_tool.py --cli "D:\Movies" --no-recursive
 python .\subtitle_tool.py --cli "D:\Movies" --style sdh
 python .\subtitle_tool.py --cli "D:\Movies" --style both --max-downloads 4
-python .\subtitle_tool.py --cli "D:\Movies" --transcribe-missing
-python .\subtitle_tool.py --cli "D:\Movies" --transcribe-missing --model medium
 ```
 
 Subfolder searching is on by default; use `--no-recursive` to scan only the
@@ -152,10 +149,6 @@ The tool reads the account's remaining quota when available, and OpenSubtitles
 enforces its actual daily quota across all runs. Searches do not count as
 downloads. `--max-downloads` can lower the per-run cap.
 
-For local transcription, install Whisper and FFmpeg separately. The first
-Whisper run downloads the selected model. Transcription runs locally and may
-mishear dialogue, so review generated subtitles.
-
 ## Errors and troubleshooting
 
 - **No video files found:** Check that the selected folder contains supported
@@ -164,12 +157,11 @@ mishear dialogue, so review generated subtitles.
   paths containing spaces can be pasted with or without surrounding quotes.
 - **No candidates or no subtitle created:** The catalog may not have a match
   for that file or release. Check the movie filename, title/year result, cut,
-  and FPS details. Enable local transcription if you want a fallback.
+  and FPS details. This tool only downloads existing subtitles from the
+  OpenSubtitles API; it does not generate subtitles.
 - **API authentication, quota, or network issue:** Check the API key and account
   credentials. Temporary GET failures are retried; service outages, rejected
   credentials, rate limits, and invalid API responses are reported in the log.
-- **Whisper or FFmpeg dependency error:** Install both and ensure FFmpeg is on
-  `PATH`, then restart the app.
 - **Media probe issue:** `ffprobe` is optional. MP4 metadata can be inspected
   directly when it is unavailable; other formats may be marked unverified.
 

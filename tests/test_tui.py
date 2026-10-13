@@ -13,6 +13,7 @@ from unittest import mock
 from textual.widgets import Input
 
 from title_search_tui import (
+    AsciiGradient,
     CandidateScreen,
     ScanIndicator,
     TitleSearchApp,
@@ -26,11 +27,38 @@ class TitleSearchTuiTests(unittest.TestCase):
     def test_app_exposes_title_palette_and_keyboard_actions(self):
         app = TitleSearchApp()
 
-        self.assertEqual(app.title, "Title Search")
+        self.assertEqual(app.title, "Title Search: Read What You Hear")
         self.assertIn(("ctrl+q", "quit_app", "Quit"), app.BINDINGS)
         self.assertIn(("ctrl+r", "start_scan", "Scan library"), app.BINDINGS)
         self.assertIn("#123824", app.CSS)
         self.assertIn("#f3c76a", app.CSS)
+
+    def test_command_palette_hides_screenshot_and_theme_commands(self):
+        app = TitleSearchApp()
+        screen = SimpleNamespace(
+            query=lambda selector: False,
+            maximized=None,
+            focused=None,
+        )
+
+        titles = {command.title for command in app.get_system_commands(screen)}
+
+        self.assertNotIn("Screenshot", titles)
+        self.assertNotIn("Theme", titles)
+        self.assertIn("Quit", titles)
+
+    def test_ascii_gradient_uses_a_background_layer(self):
+        app = TitleSearchApp()
+        backdrop = next(app.compose())
+        gradient = AsciiGradient.gradient_text(8, 3)
+
+        self.assertIsInstance(backdrop, AsciiGradient)
+        self.assertEqual(backdrop.id, "backdrop")
+        self.assertEqual(len(gradient.splitlines()), 3)
+        self.assertEqual(len(gradient.splitlines()[0]), 8)
+        self.assertNotEqual(gradient.splitlines()[0], gradient.splitlines()[-1])
+        self.assertIn("Screen { layers: backdrop default;", app.CSS)
+        self.assertIn("#backdrop { layer: backdrop;", app.CSS)
 
     @unittest.skipUnless(os.name == "nt", "Windows accepts both slash directions in paths")
     def test_folder_input_accepts_both_windows_separator_styles(self):
@@ -212,7 +240,7 @@ class TitleSearchTuiTests(unittest.TestCase):
         app = TitleSearchApp()
         selectors = (
             "#folder", "#style-select", "#max-downloads", "#recursive",
-            "#transcribe", "#start", "#credentials", "#clear", "#cancel",
+            "#start", "#credentials", "#clear", "#cancel",
         )
         widgets = {selector: mock.Mock(disabled=False) for selector in selectors}
         indicator = mock.Mock(spec=ScanIndicator)
@@ -256,7 +284,6 @@ class TitleSearchTuiTests(unittest.TestCase):
             max_downloads = mock.Mock(spec=Input, value="5")
             style = mock.Mock(value="standard")
             recursive = mock.Mock(value=True)
-            transcribe = mock.Mock(value=False)
             start = mock.Mock(disabled=False)
             cancel = mock.Mock(disabled=True)
             log = mock.Mock()
@@ -266,7 +293,6 @@ class TitleSearchTuiTests(unittest.TestCase):
                 "#max-downloads": max_downloads,
                 "#style-select": style,
                 "#recursive": recursive,
-                "#transcribe": transcribe,
                 "#start": start,
                 "#credentials": mock.Mock(disabled=False),
                 "#clear": mock.Mock(disabled=False),
@@ -334,7 +360,6 @@ class TitleSearchTuiTests(unittest.TestCase):
                 "#max-downloads": mock.Mock(value="5"),
                 "#style-select": mock.Mock(value="standard"),
                 "#recursive": mock.Mock(value=True),
-                "#transcribe": mock.Mock(value=False),
                 "#start": start,
                 "#credentials": mock.Mock(disabled=False),
                 "#clear": mock.Mock(disabled=False),

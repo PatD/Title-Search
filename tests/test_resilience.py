@@ -97,17 +97,15 @@ class ResilienceTests(unittest.TestCase):
                 with self.assertRaisesRegex(tool.MediaProbeError, "Invalid data found"):
                     tool.probe_media(path)
 
-    def test_dependency_preflight_checks_whisper_and_ffmpeg(self):
-        with mock.patch.object(tool.importlib.util, "find_spec", return_value=None), \
-             mock.patch.object(tool.shutil, "which", return_value=None):
-            problems = tool.preflight(transcribe_missing=True)
-        self.assertTrue(any("Whisper" in problem for problem in problems))
-        self.assertTrue(any("FFmpeg" in problem for problem in problems))
+    def test_dependency_preflight_requires_supported_python_only(self):
+        with mock.patch.object(tool.sys, "version_info", (3, 9)):
+            problems = tool.preflight()
+        self.assertEqual(problems, ["Python 3.10 or newer is required."])
 
-    def test_dependency_preflight_keeps_optional_dependencies_optional(self):
-        with mock.patch.object(tool.importlib.util, "find_spec", return_value=None), \
+    def test_dependency_preflight_accepts_supported_python_without_whisper_or_ffmpeg(self):
+        with mock.patch.object(tool.sys, "version_info", (3, 10)), \
              mock.patch.object(tool.shutil, "which", return_value=None):
-            self.assertEqual(tool.preflight(transcribe_missing=False), [])
+            self.assertEqual(tool.preflight(), [])
 
     def test_srt_checks_cues_order_and_runtime(self):
         good = b"1\n00:00:01,000 --> 00:00:02,000\nHello\n\n2\n00:00:03,000 --> 00:00:04,000\nWorld\n"
