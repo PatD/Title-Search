@@ -33,6 +33,7 @@ from subtitle_tool import FREE_ACCOUNT_DAILY_CAP, load_credentials
 MARKER = "TITLE_SEARCH_CANDIDATES:"
 SUMMARY_MARKER = "TITLE_SEARCH_SUMMARY:"
 QUOTA_MARKER = "TITLE_SEARCH_QUOTA:"
+DOWNLOAD_MARKER = "TITLE_SEARCH_DOWNLOAD:"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 CLI_SCRIPT = Path(__file__).with_name("subtitle_tool.py")
 
@@ -623,6 +624,24 @@ class TitleSearchApp(App[None]):
                         raise ValueError("quota payload must be an object")
                 except (json.JSONDecodeError, TypeError, ValueError) as exc:
                     self.write_log(f"Could not read OpenSubtitles allowance: {exc}")
+                continue
+            if line.startswith(DOWNLOAD_MARKER):
+                try:
+                    download = json.loads(line[len(DOWNLOAD_MARKER):])
+                    if not isinstance(download, dict):
+                        raise ValueError("download payload must be an object")
+                    movie = str(download.get("movie") or "the movie")
+                    subtitle_path = str(download.get("subtitle_path") or "")
+                    message = f"Subtitle downloaded successfully for {movie}."
+                    self.set_status(message)
+                    self.notify(
+                        f"{movie}\n{subtitle_path}" if subtitle_path else movie,
+                        title="Subtitle downloaded successfully",
+                        severity="information",
+                        timeout=12,
+                    )
+                except (json.JSONDecodeError, TypeError, ValueError) as exc:
+                    self.write_log(f"Could not read download confirmation: {exc}")
                 continue
             if line.startswith("Downloaded successfully:"):
                 if self._quota_info and self._quota_info.get("remaining_downloads") is not None:

@@ -94,6 +94,7 @@ def api_error_message(exc):
 API = "https://api.opensubtitles.com/api/v1"
 TUI_SUMMARY_MARKER = "TITLE_SEARCH_SUMMARY:"
 TUI_QUOTA_MARKER = "TITLE_SEARCH_QUOTA:"
+TUI_DOWNLOAD_MARKER = "TITLE_SEARCH_DOWNLOAD:"
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm"}
 CHUNK = 65536
 FREE_ACCOUNT_DAILY_CAP = 10
@@ -789,6 +790,13 @@ def emit_tui_quota(quota: dict) -> None:
         print(f"{TUI_QUOTA_MARKER}{json.dumps(quota, separators=(',', ':'))}", flush=True)
 
 
+def emit_tui_download(movie: str, subtitle_path: str) -> None:
+    """Notify the Textual interface about a completed subtitle download."""
+    if os.getenv("TITLE_SEARCH_TUI_CHILD") == "1":
+        payload = {"movie": movie, "subtitle_path": subtitle_path}
+        print(f"{TUI_DOWNLOAD_MARKER}{json.dumps(payload, separators=(',', ':'))}", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("folder", nargs="?", type=Path, help="folder to scan (prompted for when omitted)")
@@ -975,6 +983,7 @@ def main():
                                         downloaded += 1
                                         successful_downloads += 1
                                         print(f"Downloaded successfully: {written_path}", flush=True)
+                                        emit_tui_download(video.name, written_path)
                             else:
                                 row["notes"].append(f"User skipped the {'SDH' if hearing else 'standard'} candidate list.")
                     if not any_candidates:
@@ -998,6 +1007,7 @@ def main():
                                 downloaded += 1
                                 successful_downloads += 1
                                 print(f"Downloaded successfully: {written_path}", flush=True)
+                                emit_tui_download(video.name, written_path)
                     else:
                         row["notes"].append("User skipped the candidate list.")
                 else:

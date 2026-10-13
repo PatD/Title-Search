@@ -157,6 +157,43 @@ class TitleSearchTuiTests(unittest.TestCase):
         app.set_status.assert_called_once_with("Subtitle downloaded successfully.")
         app.write_log.assert_called_once_with(f"Downloaded successfully: {path}")
 
+    def test_download_confirmation_notifies_with_movie_name_and_saved_path(self):
+        class AsyncLines:
+            def __init__(self, lines):
+                self.lines = iter(lines)
+
+            async def readline(self):
+                return next(self.lines, b"")
+
+        movie = "The Example Movie.mp4"
+        path = "C:/Movies/The Example Movie/The Example Movie.en.srt"
+        marker = "TITLE_SEARCH_DOWNLOAD:" + json.dumps({
+            "movie": movie,
+            "subtitle_path": path,
+        })
+        app = TitleSearchApp()
+        app.process = SimpleNamespace(
+            stdout=AsyncLines([f"{marker}\n".encode()]),
+            stdin=mock.Mock(),
+        )
+        app.set_status = mock.Mock()
+        app.notify = mock.Mock()
+        app.write_log = mock.Mock()
+
+        with self.assertRaises(StopIteration):
+            app.consume_process_output().send(None)
+
+        app.set_status.assert_called_once_with(
+            "Subtitle downloaded successfully for The Example Movie.mp4."
+        )
+        app.notify.assert_called_once_with(
+            f"{movie}\n{path}",
+            title="Subtitle downloaded successfully",
+            severity="information",
+            timeout=12,
+        )
+
+
     def test_scan_indicator_animates_and_can_be_hidden(self):
         indicator = ScanIndicator()
         indicator.update = mock.Mock()

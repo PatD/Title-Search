@@ -36,6 +36,22 @@ class ResilienceTests(unittest.TestCase):
             tool.emit_tui_summary(summary)
         self.assertEqual(output.getvalue(), "")
 
+    def test_tui_download_confirmation_emits_movie_and_path_for_ui_child(self):
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {"TITLE_SEARCH_TUI_CHILD": "1"}), \
+             mock.patch("sys.stdout", output):
+            tool.emit_tui_download("Example.mp4", "C:/Movies/Example.en.srt")
+        self.assertEqual(
+            output.getvalue(),
+            'TITLE_SEARCH_DOWNLOAD:{"movie":"Example.mp4","subtitle_path":"C:/Movies/Example.en.srt"}\n',
+        )
+
+        output = io.StringIO()
+        with mock.patch.dict(os.environ, {}, clear=True), \
+             mock.patch("sys.stdout", output):
+            tool.emit_tui_download("Example.mp4", "C:/Movies/Example.en.srt")
+        self.assertEqual(output.getvalue(), "")
+
     def test_get_request_retries_service_error_then_succeeds(self):
         response = mock.MagicMock()
         response.__enter__.return_value.read.return_value = b"ok"
