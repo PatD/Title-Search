@@ -32,6 +32,10 @@ class TitleSearchTuiTests(unittest.TestCase):
         self.assertIn(("ctrl+r", "start_scan", "Scan library"), app.BINDINGS)
         self.assertIn("#123824", app.CSS)
         self.assertIn("#f3c76a", app.CSS)
+        launcher = Path(__file__).resolve().parents[1] / "Start Title Search.bat"
+        launcher_text = launcher.read_text(encoding="utf-8")
+        self.assertIn('set "PYTHONUTF8=1"', launcher_text)
+        self.assertIn('set "PYTHONIOENCODING=utf-8"', launcher_text)
 
     def test_command_palette_hides_screenshot_and_theme_commands(self):
         app = TitleSearchApp()
@@ -373,10 +377,12 @@ class TitleSearchTuiTests(unittest.TestCase):
             app.write_log = mock.Mock()
             app._credentials = {"api_key": "test-key", "username": "", "password": ""}
             launches = 0
+            child_environments = []
 
             async def create_process(*args, **kwargs):
                 nonlocal launches
                 launches += 1
+                child_environments.append(kwargs["env"])
                 if launches == 1:
                     raise RuntimeError("temporary worker failure")
                 return FakeProcess()
@@ -397,6 +403,9 @@ class TitleSearchTuiTests(unittest.TestCase):
                     app.start_scan().send(None)
 
         self.assertEqual(launches, 2)
+        self.assertEqual(len(child_environments), 2)
+        self.assertTrue(all(env["PYTHONUTF8"] == "1" for env in child_environments))
+        self.assertTrue(all(env["PYTHONIOENCODING"] == "utf-8" for env in child_environments))
         self.assertFalse(app._scan_active)
         self.assertFalse(start.disabled)
         self.assertTrue(cancel.disabled)

@@ -39,6 +39,14 @@ Python projects.
 
 ### Windows PowerShell
 
+For the easiest Windows launch, double-click `Start Title Search.bat` in
+File Explorer. The first launch creates a `.venv` folder and installs the
+Python dependencies; later launches reuse that environment. The launcher keeps
+the terminal window open after the app exits so any error remains visible.
+Python 3.10 or newer and an internet connection are needed for initial setup.
+
+You can also install and launch manually in PowerShell:
+
 ```powershell
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1

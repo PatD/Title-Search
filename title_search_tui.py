@@ -372,7 +372,7 @@ class TitleSearchApp(App[None]):
 
     def compose(self) -> ComposeResult:
         yield AsciiGradient(id="backdrop")
-        yield Header()
+        yield Header(icon="*")
         with Vertical(id="shell"):
             yield Label("MOVIE LIBRARY", classes="section-title")
             yield Input(
@@ -581,6 +581,8 @@ class TitleSearchApp(App[None]):
 
         env = os.environ.copy()
         env["TITLE_SEARCH_TUI_CHILD"] = "1"
+        env["PYTHONUTF8"] = "1"
+        env["PYTHONIOENCODING"] = "utf-8"
         env.pop("TITLE_SEARCH_FORCE_SEARCH_ONLY", None)
         env.pop("TITLE_SEARCH_DISABLE_API", None)
         for variable in (
@@ -724,7 +726,21 @@ class TitleSearchApp(App[None]):
                     )
 
 
+def configure_utf8_console() -> None:
+    """Use a Unicode-safe stream encoding on Windows consoles and pipes."""
+    if os.name != "nt":
+        return
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            try:
+                reconfigure(encoding="utf-8", errors="replace")
+            except (OSError, ValueError):
+                pass
+
+
 def run_tui(initial_folder: str = "") -> None:
+    configure_utf8_console()
     TitleSearchApp(initial_folder=initial_folder).run()
 
 
