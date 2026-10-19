@@ -260,3 +260,105 @@ Run the test suite from the repository folder with:
 ```sh
 python -m unittest discover -s tests -v
 ```
+
+The tests use Python's built-in `unittest` framework. Network requests, subprocesses,
+filesystem errors, and user input are mocked where practical, so the suite does not
+need an OpenSubtitles account, a network connection, or FFmpeg. Temporary files are
+used for media, subtitle, and folder checks.
+
+### `tests/test_resilience.py`
+
+These tests cover subtitle-engine behavior, input validation, and failure handling:
+
+- `test_tui_summary_emits_machine_readable_line_only_for_ui_child` checks that scan
+  summaries are emitted in the UI's JSON marker format only for UI child processes.
+- `test_tui_download_confirmation_emits_movie_and_path_for_ui_child` checks that
+  download notifications include the movie and saved path only for UI child processes.
+- `test_get_request_retries_service_error_then_succeeds` verifies that a retryable
+  HTTP service error is retried and a later successful response is returned.
+- `test_post_request_is_not_retried` verifies that a failed POST is attempted only once.
+- `test_retries_timeouts_only_three_times` verifies the request retry limit and that
+  a persistent timeout is reported as an API outage.
+- `test_authenticated_redirects_are_limited_to_the_same_origin` verifies that API
+  credentials are retained for same-origin redirects and rejected for cross-origin ones.
+- `test_unauthenticated_download_redirects_remain_supported` verifies that subtitle
+  file downloads can follow redirects without forwarding API credentials.
+- `test_login_accepts_documented_api_hosts` checks login with both supported
+  OpenSubtitles API hosts.
+- `test_login_rejects_unsupported_api_hosts` checks rejection of unsafe or malformed
+  API base URLs, including HTTP, unexpected ports, user information, and lookalike hosts.
+- `test_runtime_requirements_are_exact_and_hash_pinned` checks that runtime packages
+  are exactly pinned and each has a SHA-256 hash under hash-checking mode.
+- `test_corrupt_mp4_is_reported` verifies that an invalid MP4 is rejected when no
+  media probe is available.
+- `test_ffprobe_failure_is_reported_as_corrupt_media` verifies that an `ffprobe`
+  failure is surfaced as a media validation error.
+- `test_dependency_preflight_requires_supported_python_only` checks the minimum
+  supported Python version error.
+- `test_dependency_preflight_accepts_supported_python_without_whisper_or_ffmpeg`
+  verifies that supported Python is sufficient and optional Whisper/FFmpeg tools are
+  not required for startup.
+- `test_srt_checks_cues_order_and_runtime` checks valid cue timing, chronological
+  ordering, and subtitle timing against the media runtime.
+- `test_bad_subtitle_zip_becomes_clear_validation_error` checks that a damaged
+  subtitle archive produces a clear validation error.
+- `test_scanning_skips_broken_symlinks_and_records_permission_errors` checks that
+  inaccessible files do not stop a scan and that a warning is recorded.
+- `test_output_failure_does_not_create_outside_target` checks that a failed subtitle
+  write leaves no partial subtitle file behind.
+- `test_no_path_prompts_then_exits_when_input_is_blank` checks the empty-path prompt
+  and clean exit behavior.
+- `test_folder_prompt_uses_rich_console_when_available` checks that folder entry uses
+  the Rich console when it is available.
+- `test_interactive_folder_with_no_videos_reports_empty_library` checks the result
+  shown when the selected folder contains no supported videos.
+
+### `tests/test_tui.py`
+
+These tests cover the Textual interface, scan lifecycle, and subtitle candidate picker:
+
+- `test_app_exposes_title_palette_and_keyboard_actions` checks the app title, key
+  bindings, core colors, and launcher's UTF-8 and hash-locked installation settings.
+- `test_command_palette_hides_screenshot_and_theme_commands` checks which system
+  commands appear in the command palette.
+- `test_ascii_gradient_uses_a_background_layer` checks the ASCII gradient dimensions
+  and that it is composed as a background layer behind the interface.
+- `test_folder_input_accepts_both_windows_separator_styles` checks that Windows paths
+  using either slash direction resolve to the same folder. This test runs only on Windows.
+- `test_scan_and_credentials_events_are_dispatched_as_workers` checks that scan and
+  credential actions are dispatched as background workers.
+- `test_launch_without_folder_reports_error_and_does_not_start_worker` checks that a
+  blank folder path is reported and does not start a scan.
+- `test_download_summary_preserves_other_scan_results` checks that download results
+  are added without losing the rest of the scan summary.
+- `test_quota_status_estimates_download_batches_and_separates_scans` checks remaining
+  download estimates and clarifies that scanning does not use download quota.
+- `test_quota_status_reports_exhaustion_and_unavailable_account` checks the messages
+  for an exhausted quota and an account whose quota could not be retrieved.
+- `test_download_confirmation_updates_status_and_logs_path` checks that a successful
+  download updates the status and logs the saved path.
+- `test_download_confirmation_notifies_with_movie_name_and_saved_path` checks that the
+  success notification includes the movie name and subtitle path.
+- `test_scan_indicator_animates_and_can_be_hidden` checks that the scan indicator
+  advances through frames and disappears when scanning stops.
+- `test_scan_ui_locks_configuration_and_leaves_cancel_enabled` checks that scan
+  settings are disabled during a scan while the cancel control remains available.
+- `test_cancel_scan_terminates_process_and_reports_status` checks that cancellation
+  requests terminate the worker and update the status and log.
+- `test_subprocess_startup_failure_is_reported_and_controls_reenabled` checks error
+  reporting and control restoration when the subtitle process cannot start.
+- `test_repeated_scan_after_unexpected_error_restores_ui` checks that an unexpected
+  worker error restores the interface and a later scan can still complete.
+- `test_candidate_label_includes_release_fps_language_and_match_style` checks the
+  release, frame rate, language, download count, and visual match style in a candidate.
+- `test_candidate_mismatch_is_visually_flagged` checks the visible warning for a
+  candidate with a mismatched frame rate.
+- `test_candidate_selection_returns_one_based_result_number` checks that selecting a
+  candidate returns its one-based result number to the scan flow.
+- `test_candidate_skip_returns_no_selection` checks that skipping returns no selection.
+- `test_candidate_picker_keeps_cancel_and_quit_available` checks that cancel and quit
+  remain available from the candidate picker.
+- `test_run_summary_calls_out_when_every_movie_already_has_srt` checks the summary
+  shown when every video already has a subtitle file.
+- `test_run_summary_reports_empty_and_partial_scans` checks the summaries for empty
+  libraries and scans with existing subtitles, outputs, and issues.
