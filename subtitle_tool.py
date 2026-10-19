@@ -91,6 +91,7 @@ def api_error_message(exc):
 
 
 API = "https://api.opensubtitles.com/api/v1"
+API_HOSTS = {"api.opensubtitles.com", "vip-api.opensubtitles.com"}
 TUI_SUMMARY_MARKER = "TITLE_SEARCH_SUMMARY:"
 TUI_QUOTA_MARKER = "TITLE_SEARCH_QUOTA:"
 TUI_DOWNLOAD_MARKER = "TITLE_SEARCH_DOWNLOAD:"
@@ -330,12 +331,44 @@ def fps_comparison(candidate_fps, source_fps):
     return f"{candidate_fps:g} fps; MISMATCH vs video {source_fps:.3f}"
 
 
+class CredentialRedirectHandler(urllib.request.HTTPRedirectHandler):
+    """Do not forward API credentials to a different origin on redirects."""
+
+    @staticmethod
+    def _origin(url: str) -> tuple[str, str, int | None] | None:
+        try:
+            parsed = urllib.parse.urlsplit(url)
+            hostname = parsed.hostname
+            if not parsed.scheme or not hostname:
+                return None
+            port = parsed.port
+        except ValueError:
+            return None
+        if port is None:
+            port = 443 if parsed.scheme.lower() == "https" else 80 if parsed.scheme.lower() == "http" else None
+        return parsed.scheme.lower(), hostname.rstrip(".").casefold(), port
+
+    def redirect_request(self, req, fp, code, msg, headers, newurl):
+        sensitive = {"api-key", "authorization"}
+        has_credentials = any(name.casefold() in sensitive for name, _ in req.header_items())
+        if has_credentials and self._origin(req.full_url) != self._origin(newurl):
+            raise urllib.error.HTTPError(
+                req.full_url,
+                code,
+                "Refusing cross-origin redirect for a request with credentials",
+                headers,
+                fp,
+            )
+        return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+
 def request(url: str, *, method="GET", data=None, headers=None):
     req = urllib.request.Request(url, data=data, method=method, headers=headers or {})
     retryable = method.upper() == "GET"
     for attempt in range(3 if retryable else 1):
         try:
-            with urllib.request.urlopen(req, timeout=45) as response:
+            opener = urllib.request.build_opener(CredentialRedirectHandler)
+            with opener.open(req, timeout=45) as response:
                 body = response.read(50 * 1024 * 1024 + 1)
                 if len(body) > 50 * 1024 * 1024:
                     raise ValueError("OpenSubtitles response exceeded the 50 MiB safety limit")
@@ -529,11 +562,24 @@ def login(key: str) -> tuple[str | None, str, dict]:
     host = session.get("base_url", "api.opensubtitles.com")
     if not isinstance(host, str):
         raise ValueError("Login returned an invalid API host")
-    if not host.startswith("http"):
-        host = "https://" + host
-    parsed = urllib.parse.urlparse(host)
-    if parsed.scheme != "https" or not parsed.netloc:
-        raise ValueError("Login returned an invalid API host")
+    url = host if "://" in host else f"https://{host}"
+    try:
+        parsed = urllib.parse.urlsplit(url)
+        port = parsed.port
+    except ValueError as exc:
+        raise ValueError("Login returned an unsupported API host") from exc
+    if (
+        parsed.scheme.lower() != "https"
+        or parsed.hostname not in API_HOSTS
+        or parsed.username is not None
+        or parsed.password is not None
+        or port not in (None, 443)
+        or parsed.path not in ("", "/")
+        or parsed.query
+        or parsed.fragment
+    ):
+        raise ValueError("Login returned an unsupported API host")
+    host = f"https://{parsed.hostname}"
     user_data = session.get("user", {})
     if not isinstance(user_data, dict):
         user_data = {}

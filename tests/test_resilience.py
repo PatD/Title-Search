@@ -56,28 +56,119 @@ class ResilienceTests(unittest.TestCase):
         response = mock.MagicMock()
         response.__enter__.return_value.read.return_value = b"ok"
         response.__enter__.return_value.headers = {}
-        failure = urllib.error.HTTPError("url", 503, "busy", {}, io.BytesIO())
-        with mock.patch.object(tool.urllib.request, "urlopen", side_effect=[failure, response]), \
+        opener = mock.Mock()
+        opener.open.side_effect = [
+            urllib.error.HTTPError("url", 503, "busy", {}, io.BytesIO()),
+            response,
+        ]
+        with mock.patch.object(tool.urllib.request, "build_opener", return_value=opener) as build_opener, \
              mock.patch.object(tool.time, "sleep") as sleep:
             body, _ = tool.request("https://example.invalid")
         self.assertEqual(body, b"ok")
         sleep.assert_called_once_with(1)
+        self.assertEqual(opener.open.call_count, 2)
+        build_opener.assert_called_with(tool.CredentialRedirectHandler)
 
     def test_post_request_is_not_retried(self):
         failure = urllib.error.HTTPError("url", 503, "busy", {}, io.BytesIO())
-        with mock.patch.object(tool.urllib.request, "urlopen", side_effect=failure) as open_url:
+        opener = mock.Mock()
+        opener.open.side_effect = failure
+        with mock.patch.object(tool.urllib.request, "build_opener", return_value=opener):
             with self.assertRaises(tool.ApiFailure):
                 tool.request("https://example.invalid", method="POST", data=b"{}")
-        self.assertEqual(open_url.call_count, 1)
+        self.assertEqual(opener.open.call_count, 1)
 
     def test_retries_timeouts_only_three_times(self):
-        with mock.patch.object(tool.urllib.request, "urlopen", side_effect=TimeoutError("late")) as open_url, \
+        opener = mock.Mock()
+        opener.open.side_effect = TimeoutError("late")
+        with mock.patch.object(tool.urllib.request, "build_opener", return_value=opener), \
              mock.patch.object(tool.time, "sleep") as sleep:
             with self.assertRaises(tool.ApiFailure) as raised:
                 tool.request("https://example.invalid")
         self.assertTrue(raised.exception.outage)
-        self.assertEqual(open_url.call_count, 3)
+        self.assertEqual(opener.open.call_count, 3)
         self.assertEqual(sleep.call_count, 2)
+
+    def test_authenticated_redirects_are_limited_to_the_same_origin(self):
+        handler = tool.CredentialRedirectHandler()
+        request = tool.urllib.request.Request(
+            "https://api.opensubtitles.com/api/v1/subtitles",
+            headers={"Api-Key": "test-key", "Authorization": "Bearer test-token"},
+        )
+        with self.assertRaisesRegex(urllib.error.HTTPError, "cross-origin redirect"):
+            handler.redirect_request(
+                request, io.BytesIO(), 302, "Found", {},
+                "https://attacker.example/collect",
+            )
+
+        same_origin = handler.redirect_request(
+            request, io.BytesIO(), 302, "Found", {},
+            "https://api.opensubtitles.com/api/v1/next",
+        )
+        self.assertEqual(same_origin.full_url, "https://api.opensubtitles.com/api/v1/next")
+        self.assertEqual(same_origin.get_header("Api-key"), "test-key")
+        self.assertEqual(same_origin.get_header("Authorization"), "Bearer test-token")
+
+    def test_unauthenticated_download_redirects_remain_supported(self):
+        handler = tool.CredentialRedirectHandler()
+        request = tool.urllib.request.Request(
+            "https://api.opensubtitles.com/download", headers={"User-Agent": "test"}
+        )
+        redirected = handler.redirect_request(
+            request, io.BytesIO(), 302, "Found", {},
+            "https://downloads.example/subtitle.zip",
+        )
+        self.assertEqual(redirected.full_url, "https://downloads.example/subtitle.zip")
+
+    def test_login_accepts_documented_api_hosts(self):
+        for host in ("api.opensubtitles.com", "vip-api.opensubtitles.com"):
+            with self.subTest(host=host):
+                session = {"base_url": host, "token": "test-token"}
+                with mock.patch.dict(os.environ, {
+                    "OPENSUBTITLES_USERNAME": "test-user",
+                    "OPENSUBTITLES_PASSWORD": "test-password",
+                }, clear=True), \
+                     mock.patch.object(tool, "load_credentials", return_value={}), \
+                     mock.patch.object(tool, "request", return_value=(json.dumps(session).encode(), {})):
+                    token, api_base, _ = tool.login("test-key")
+                self.assertEqual(token, "test-token")
+                self.assertEqual(api_base, f"https://{host}/api/v1")
+
+    def test_login_rejects_unsupported_api_hosts(self):
+        invalid_hosts = (
+            "https://attacker.example",
+            "https://api.opensubtitles.com.attacker.example",
+            "https://user@api.opensubtitles.com",
+            "https://api.opensubtitles.com:444",
+            "https://api.opensubtitles.com:invalid",
+            "http://api.opensubtitles.com",
+        )
+        for host in invalid_hosts:
+            with self.subTest(host=host):
+                session = {"base_url": host, "token": "test-token"}
+                with mock.patch.dict(os.environ, {
+                    "OPENSUBTITLES_USERNAME": "test-user",
+                    "OPENSUBTITLES_PASSWORD": "test-password",
+                }, clear=True), \
+                     mock.patch.object(tool, "load_credentials", return_value={}), \
+                     mock.patch.object(tool, "request", return_value=(json.dumps(session).encode(), {})):
+                    with self.assertRaisesRegex(ValueError, "unsupported API host"):
+                        tool.login("test-key")
+
+    def test_runtime_requirements_are_exact_and_hash_pinned(self):
+        requirements_file = MODULE_PATH.parent / "requirements.txt"
+        lines = requirements_file.read_text(encoding="utf-8").splitlines()
+        self.assertIn("--require-hashes", lines)
+        entries = [index for index, line in enumerate(lines) if "==" in line]
+        self.assertEqual(len(entries), 9)
+        for index in entries:
+            with self.subTest(requirement=lines[index]):
+                self.assertTrue(lines[index].endswith("\\"))
+                hash_line = lines[index + 1].strip()
+                self.assertTrue(hash_line.startswith("--hash=sha256:"))
+                digest = hash_line.removeprefix("--hash=sha256:")
+                self.assertEqual(len(digest), 64)
+                self.assertTrue(all(character in "0123456789abcdef" for character in digest))
 
     def test_corrupt_mp4_is_reported(self):
         with tempfile.TemporaryDirectory(dir=MODULE_PATH.parent / "tests") as directory:

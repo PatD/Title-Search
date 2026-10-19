@@ -61,8 +61,10 @@ Requirements for manual installation:
 - Python 3.10 or newer.
 - Internet access and an OpenSubtitles.com API key to search and download
   existing subtitles.
-- `ffprobe` is optional. Without it, MP4 metadata is read directly; metadata for
-  other formats may be unverified. No local speech-recognition software is used.
+- `ffprobe` is optional. When present on `PATH`, it reads metadata from scanned
+  media files with your account's permissions. Keep it updated and scan only
+  media you trust. Without it, MP4 metadata is read directly; metadata for other
+  formats may be unverified. No local speech-recognition software is used.
 
 Using a virtual environment keeps the app's dependencies separate from other
 Python projects. The Windows batch launcher creates and uses this environment
@@ -82,7 +84,7 @@ You can also install and launch manually in PowerShell:
 py -3 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.txt
 ```
 
 If `py` is unavailable, use `python` in place of `py -3`.
@@ -93,7 +95,7 @@ If `py` is unavailable, use `python` in place of `py -3`.
 python3 -m venv .venv
 source .venv/bin/activate
 python -m pip install --upgrade pip
-python -m pip install -r requirements.txt
+python -m pip install --require-hashes -r requirements.txt
 ```
 
 ### OpenSubtitles credentials
@@ -121,7 +123,13 @@ nano subtitle_credentials.json
 
 The JSON file accepts `api_key`, `username`, and `password`. It is excluded by
 `.gitignore`, so Git will not add it to commits. The file is plain text and is
-not encrypted. You can instead set `OPENSUBTITLES_API_KEY`,
+not encrypted. On Windows, use the file's **Properties → Security → Advanced**
+settings to remove broad inherited access and grant access only to your account
+(and Windows system administrators). On macOS or Linux, restrict it with
+`chmod 600 subtitle_credentials.json`. Treat backups and synced copies as
+credential copies too. Environment variables avoid storing values in this file,
+but they are not a secure vault and may be visible to processes running as your
+account. You can instead set `OPENSUBTITLES_API_KEY`,
 `OPENSUBTITLES_USERNAME`, and `OPENSUBTITLES_PASSWORD` environment variables;
 they override values in the JSON file. The TUI's Credentials screen accepts
 values for the current run but does not save them.
@@ -219,6 +227,31 @@ Downloaded subtitles are checked for valid, ordered cues and timing close to
 the movie runtime. Output is written atomically, and an existing sidecar is
 never replaced. The CLI exits with status 1 for scan or processing errors,
 status 2 for startup/configuration errors, and status 130 when interrupted.
+Subtitle files come from an external catalog. This app does not execute them,
+but media players parse their contents when you play a movie. Keep your media
+player updated and treat downloaded subtitle files as untrusted input.
+
+## Dependency security (maintainers)
+
+`requirements.txt` pins the runtime packages and their universal wheel hashes.
+The Windows launcher and manual install commands verify those hashes. Review
+dependency updates before changing a version or its hash; the lock includes all
+runtime and transitive packages. To audit the locked dependencies without
+adding the audit tool to the app environment, create a separate environment:
+
+```powershell
+py -3 -m venv .audit-venv
+.\.audit-venv\Scripts\python.exe -m pip install pip-audit
+.\.audit-venv\Scripts\pip-audit.exe -r requirements.txt
+```
+
+On macOS or Linux, use:
+
+```sh
+python3 -m venv .audit-venv
+.audit-venv/bin/python -m pip install pip-audit
+.audit-venv/bin/pip-audit -r requirements.txt
+```
 
 ## Tests
 

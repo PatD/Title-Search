@@ -27,7 +27,7 @@ goto launch_app
 
 :install_dependencies
 echo Installing Title Search dependencies. This happens only when needed...
-"%VENV_PY%" -m pip install -r "%~dp0requirements.txt"
+"%VENV_PY%" -m pip install --require-hashes -r "%~dp0requirements.txt"
 if errorlevel 1 goto dependency_install_failed
 
 :launch_app

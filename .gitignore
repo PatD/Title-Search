@@ -1,5 +1,6 @@
 subtitle_credentials.json
 .venv/
+.audit-venv/
 *.srt
 *.mp4
 *.mkv

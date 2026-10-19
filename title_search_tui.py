@@ -41,9 +41,7 @@ CLI_SCRIPT = Path(__file__).with_name("subtitle_tool.py")
 
 
 class AsciiGradient(Static):
-    """A subtle, resize-aware ASCII texture rendered behind the interface."""
-
-    RAMP = " .,:-=+*#"
+    """A subtle, resize-aware film frame rendered behind the interface."""
 
     def __init__(self, **kwargs):
         super().__init__("", markup=False, **kwargs)
@@ -59,15 +57,31 @@ class AsciiGradient(Static):
     def gradient_text(cls, width: int, height: int) -> str:
         if width < 1 or height < 1:
             return ""
-        ramp_max = len(cls.RAMP) - 1
         rows = []
         for y in range(height):
-            vertical = y / max(1, height - 1)
-            row = []
-            for x in range(width):
-                horizontal = x / max(1, width - 1)
-                level = round((horizontal * 0.72 + vertical * 0.28) * ramp_max)
-                row.append(cls.RAMP[level])
+            row = [" "] * width
+            if width >= 12:
+                left_rail, right_rail = 5, width - 6
+                row[left_rail] = "|"
+                row[right_rail] = "|"
+
+                # Repeating sprocket holes give the side rails a film-strip edge.
+                if y % 3 == 1:
+                    row[1:3] = "[]"
+                    row[width - 3:width - 1] = "[]"
+
+                # Short frame marks keep the middle clear behind the controls.
+                if y % 12 == 0 or y == height - 1:
+                    for x in range(3, min(left_rail + 1, width)):
+                        row[x] = "-"
+                    for x in range(max(right_rail, width - 9), width - 3):
+                        row[x] = "-"
+            else:
+                # Keep a recognizable, unclipped edge motif on narrow terminals.
+                edge = "/" if y == 0 else "\\" if y == height - 1 else "|"
+                row[0] = edge
+                if width > 1:
+                    row[-1] = edge
             rows.append("".join(row))
         return "\n".join(rows)
 
@@ -337,7 +351,7 @@ class TitleSearchApp(App[None]):
 
     CSS = """
     Screen { layers: backdrop default; background: #111915; color: #e5eee7; }
-    #backdrop { layer: backdrop; position: absolute; width: 100%; height: 100%; color: #27392f; background: transparent; }
+    #backdrop { layer: backdrop; position: absolute; width: 100%; height: 100%; min-height: 100%; overflow: hidden; color: #27392f; background: transparent; }
     Header { background: #123824; color: #f3c76a; }
     Footer { background: #0c2116; color: #e7bd61; }
     #shell { height: 1fr; padding: 1 2; }

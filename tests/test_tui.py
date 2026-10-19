@@ -36,6 +36,7 @@ class TitleSearchTuiTests(unittest.TestCase):
         launcher_text = launcher.read_text(encoding="utf-8")
         self.assertIn('set "PYTHONUTF8=1"', launcher_text)
         self.assertIn('set "PYTHONIOENCODING=utf-8"', launcher_text)
+        self.assertIn("-m pip install --require-hashes -r", launcher_text)
 
     def test_command_palette_hides_screenshot_and_theme_commands(self):
         app = TitleSearchApp()
