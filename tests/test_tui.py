@@ -51,6 +51,7 @@ class TitleSearchTuiTests(unittest.TestCase):
         self.assertNotIn("Screenshot", titles)
         self.assertNotIn("Theme", titles)
         self.assertIn("Quit", titles)
+        self.assertIn("Set download cap", titles)
 
     def test_ascii_gradient_uses_a_background_layer(self):
         app = TitleSearchApp()
@@ -244,7 +245,7 @@ class TitleSearchTuiTests(unittest.TestCase):
     def test_scan_ui_locks_configuration_and_leaves_cancel_enabled(self):
         app = TitleSearchApp()
         selectors = (
-            "#folder", "#style-select", "#max-downloads", "#recursive",
+            "#folder", "#style-select", "#recursive",
             "#start", "#credentials", "#clear", "#cancel",
         )
         widgets = {selector: mock.Mock(disabled=False) for selector in selectors}
@@ -286,7 +287,6 @@ class TitleSearchTuiTests(unittest.TestCase):
         with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as folder_path:
             app = TitleSearchApp()
             folder = mock.Mock(spec=Input, value=folder_path)
-            max_downloads = mock.Mock(spec=Input, value="5")
             style = mock.Mock(value="standard")
             recursive = mock.Mock(value=True)
             start = mock.Mock(disabled=False)
@@ -295,7 +295,6 @@ class TitleSearchTuiTests(unittest.TestCase):
             indicator = mock.Mock(spec=ScanIndicator)
             widgets = {
                 "#folder": folder,
-                "#max-downloads": max_downloads,
                 "#style-select": style,
                 "#recursive": recursive,
                 "#start": start,
@@ -309,6 +308,7 @@ class TitleSearchTuiTests(unittest.TestCase):
             app.query_one = mock.Mock(side_effect=lambda selector, *_: widgets[selector])
             app.set_status = mock.Mock()
             app._credentials = {"api_key": "test-key", "username": "", "password": ""}
+            app._max_downloads = 5
 
             with mock.patch(
                 "title_search_tui.asyncio.create_subprocess_exec",
@@ -362,7 +362,6 @@ class TitleSearchTuiTests(unittest.TestCase):
             indicator = mock.Mock(spec=ScanIndicator)
             widgets = {
                 "#folder": folder,
-                "#max-downloads": mock.Mock(value="5"),
                 "#style-select": mock.Mock(value="standard"),
                 "#recursive": mock.Mock(value=True),
                 "#start": start,
@@ -377,6 +376,7 @@ class TitleSearchTuiTests(unittest.TestCase):
             app.set_status = mock.Mock()
             app.write_log = mock.Mock()
             app._credentials = {"api_key": "test-key", "username": "", "password": ""}
+            app._max_downloads = 5
             launches = 0
             child_environments = []
 
@@ -428,6 +428,18 @@ class TitleSearchTuiTests(unittest.TestCase):
         self.assertIn("en English", rendered)
         self.assertIn("42 downloads", rendered)
         self.assertTrue(any("7fc69a" in str(span.style) for span in label.spans))
+
+    def test_candidate_dialog_title_includes_source_fps(self):
+        self.assertEqual(
+            CandidateScreen.format_title("Example.mkv", 23.976),
+            "Choose a subtitle for Example.mkv · 23.976 FPS",
+        )
+
+    def test_candidate_dialog_title_shows_unknown_source_fps(self):
+        self.assertEqual(
+            CandidateScreen.format_title("Example.mkv", None),
+            "Choose a subtitle for Example.mkv · FPS unknown",
+        )
 
     def test_candidate_mismatch_is_visually_flagged(self):
         label = CandidateScreen.format_candidate(1, {

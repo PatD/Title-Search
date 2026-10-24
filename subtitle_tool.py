@@ -689,6 +689,7 @@ def select_result(items, path: Path, search_kind: str, source_fps=None):
             "items": tui_candidates,
             "title_search": title_search,
             "movie": path.name,
+            "source_fps": source_fps,
         }), flush=True)
     while True:
         try:

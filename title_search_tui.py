@@ -211,6 +211,55 @@ class CredentialScreen(ModalScreen[dict | None]):
         self.dismiss(None)
 
 
+class DownloadCapScreen(ModalScreen[int | None]):
+    """Edit the per-run subtitle download limit from the command palette."""
+
+    BINDINGS = [("escape", "cancel", "Cancel")]
+
+    CSS = """
+    DownloadCapScreen { align: center middle; background: $background 80%; }
+    #download-cap-dialog { width: 58; height: auto; padding: 1 2; border: round #d5a443; background: #10271c; }
+    #download-cap-title { color: #f3c76a; text-style: bold; margin-bottom: 1; }
+    #download-cap-note { color: #b9c9bd; height: auto; margin-bottom: 1; }
+    #download-cap-input { margin-bottom: 1; border: round #496c54; }
+    #download-cap-error { color: #ffbf69; height: 1; }
+    """
+
+    def __init__(self, value: int, **kwargs):
+        super().__init__(**kwargs)
+        self.value = value
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="download-cap-dialog"):
+            yield Static("Per-run download cap", id="download-cap-title")
+            yield Static(
+                f"Maximum subtitles to download in one scan (1–{FREE_ACCOUNT_DAILY_CAP}).",
+                id="download-cap-note",
+            )
+            yield Input(value=str(self.value), type="integer", id="download-cap-input")
+            yield Static("Press Enter to save, or Esc to cancel.", id="download-cap-error")
+
+    def on_mount(self) -> None:
+        field = self.query_one("#download-cap-input", Input)
+        field.focus()
+        field.action_select_all()
+
+    def on_input_submitted(self, event: Input.Submitted) -> None:
+        try:
+            value = int(event.value.strip())
+            if not 1 <= value <= FREE_ACCOUNT_DAILY_CAP:
+                raise ValueError
+        except ValueError:
+            self.query_one("#download-cap-error", Static).update(
+                f"Enter a whole number from 1 to {FREE_ACCOUNT_DAILY_CAP}."
+            )
+            return
+        self.dismiss(value)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
 class CandidateScreen(ModalScreen[int | None]):
     """Keyboard picker for subtitle releases returned by the CLI engine."""
 
@@ -234,6 +283,11 @@ class CandidateScreen(ModalScreen[int | None]):
         self.payload = payload
 
     @staticmethod
+    def format_title(movie: str, source_fps) -> str:
+        fps_label = f"{float(source_fps):.3f} FPS" if source_fps else "FPS unknown"
+        return f"Choose a subtitle for {movie} · {fps_label}"
+
+    @staticmethod
     def format_candidate(index: int, candidate: dict) -> Text:
         fps = candidate.get("fps", "FPS unknown")
         release = candidate.get("release", "Release unknown")
@@ -254,7 +308,10 @@ class CandidateScreen(ModalScreen[int | None]):
         title_search = self.payload.get("title_search", False)
         candidates = self.payload.get("items", [])
         with Vertical(id="candidate-dialog"):
-            yield Static(f"Choose a subtitle for {movie}", id="candidate-title")
+            yield Static(
+                self.format_title(movie, self.payload.get("source_fps")),
+                id="candidate-title",
+            )
             yield Static(
                 "Title search results are not exact file matches. Confirm the title, year, and cut."
                 if title_search else
@@ -341,12 +398,14 @@ class TitleSearchApp(App[None]):
     ]
 
     def get_system_commands(self, screen) -> Iterator[SystemCommand]:
-        """Keep the useful palette commands but hide screenshot and theme actions."""
+        """Keep useful palette commands and expose the less-used download cap."""
         hidden_commands = {"screenshot", "theme"}
-        yield from (
-            command
-            for command in super().get_system_commands(screen)
-            if command.title.casefold() not in hidden_commands
+        yield from (command for command in super().get_system_commands(screen)
+                    if command.title.casefold() not in hidden_commands)
+        yield SystemCommand(
+            "Set download cap",
+            "Choose the maximum subtitles to download in one scan",
+            self.action_set_download_cap,
         )
 
     CSS = """
@@ -357,11 +416,9 @@ class TitleSearchApp(App[None]):
     #shell { height: 1fr; padding: 1 2; }
     .section-title { color: #e7bd61; text-style: bold; margin-top: 1; }
     #folder { margin-top: 1; border: round #496c54; }
-    #options { height: 5; margin-top: 1; }
-    #style-select { width: 1fr; margin-right: 1; }
-    #max-downloads { width: 22; }
-    #toggles { height: 3; margin-top: 1; }
-    #toggles Checkbox { margin-right: 3; }
+    #options { height: 3; margin-top: 1; }
+    #style-select { width: 30; margin-right: 1; }
+    #recursive { margin-left: 1; }
     #actions { height: 3; margin-top: 1; }
     #actions Button { margin-right: 1; }
     #run-status { height: 1; color: #e7bd61; margin-top: 1; }
@@ -383,6 +440,7 @@ class TitleSearchApp(App[None]):
         self._scan_active = False
         self._cancel_requested = False
         self._quota_info: dict | None = None
+        self._max_downloads = FREE_ACCOUNT_DAILY_CAP
 
     def compose(self) -> ComposeResult:
         yield AsciiGradient(id="backdrop")
@@ -401,8 +459,6 @@ class TitleSearchApp(App[None]):
                     allow_blank=False,
                     id="style-select",
                 )
-                yield Input(value=str(FREE_ACCOUNT_DAILY_CAP), placeholder="Max downloads", id="max-downloads")
-            with Horizontal(id="toggles"):
                 yield Checkbox("Search subfolders", value=True, id="recursive")
             with Horizontal(id="actions"):
                 yield Button("Start scan", variant="primary", id="start")
@@ -417,6 +473,18 @@ class TitleSearchApp(App[None]):
 
     def on_mount(self) -> None:
         self.query_one("#folder", Input).focus()
+
+    def action_set_download_cap(self) -> None:
+        if self._scan_active:
+            self.set_status("Finish or cancel the current scan before changing the download cap.")
+            return
+        self.push_screen(DownloadCapScreen(self._max_downloads), self._download_cap_changed)
+
+    def _download_cap_changed(self, value: int | None) -> None:
+        if value is None:
+            return
+        self._max_downloads = value
+        self.set_status(f"Per-run download cap set to {value}.")
 
     def write_log(self, message: str) -> None:
         self.query_one("#run-log", RichLog).write(message.rstrip("\r\n"))
@@ -535,7 +603,6 @@ class TitleSearchApp(App[None]):
         for selector in (
             "#folder",
             "#style-select",
-            "#max-downloads",
             "#recursive",
             "#start",
             "#credentials",
@@ -564,15 +631,7 @@ class TitleSearchApp(App[None]):
         except OSError as exc:
             self.set_status(f"Cannot inspect folder: {exc}")
             return
-        max_downloads_text = self.query_one("#max-downloads", Input).value.strip()
-        try:
-            max_downloads = int(max_downloads_text)
-            if not 1 <= max_downloads <= FREE_ACCOUNT_DAILY_CAP:
-                raise ValueError
-        except ValueError:
-            self.set_status(f"Max downloads must be from 1 to {FREE_ACCOUNT_DAILY_CAP}.")
-            self.query_one("#max-downloads", Input).focus()
-            return
+        max_downloads = self._max_downloads
 
         if self._credentials is None:
             try:

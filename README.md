@@ -48,7 +48,24 @@ The batch file leaves its window open when the app exits so startup errors remai
 visible. If Python is already installed, you do not need to open a terminal or
 install packages manually.
 
-### macOS or Linux
+### macOS: double-click to run
+
+1. Install Python 3.10 or newer from [python.org](https://www.python.org/downloads/macos/).
+2. Download this repository as a ZIP and extract it, or clone the repository with Git.
+3. In Finder, double-click **Start Title Search.command**. On its first launch it
+   creates a private `.venv` environment and installs the app's Python packages.
+   This setup needs an internet connection; later launches reuse the environment.
+4. In the app, choose **Credentials** and enter your OpenSubtitles API key,
+   username, and password. To avoid entering them again, follow the saved
+   credentials instructions below.
+5. Enter the folder containing your movies, choose the subtitle style, and click
+   **Start scan**.
+
+If macOS says the file cannot be opened because it is from an unidentified
+developer, Control-click the `.command` file, choose **Open**, then confirm.
+The terminal stays open after the app exits so startup errors remain visible.
+
+### Linux
 
 Install Python 3.10 or newer, download or clone the repository, then follow the
 manual virtual-environment instructions below. Launch with
@@ -160,8 +177,8 @@ In the interface:
 
 1. Enter the folder that contains your movies. The app searches subfolders by
    default. Windows paths accept either `/` or `\` separators.
-2. Choose Standard English, English SDH, or Offer both. Set the per-run
-   download cap if desired.
+2. Choose Standard English, English SDH, or Offer both. The per-run download
+   cap defaults to 10; change it from the command palette with **Set download cap**.
 3. Choose **Start scan**. If credentials are missing, enter them in the
    Credentials screen. **Search only** lets you search the catalog without
    downloading; downloads require account credentials.
