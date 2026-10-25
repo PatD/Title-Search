@@ -168,6 +168,17 @@ class TitleSearchTuiTests(unittest.TestCase):
         self.assertIn("couldn't be verified", unavailable)
         self.assertIn("API unavailable", unavailable)
 
+    def test_quota_status_includes_app_rolling_window(self):
+        message = format_quota_status({
+            "remaining_downloads": 8,
+            "daily_limit": 10,
+            "local_remaining_downloads": 3,
+            "local_daily_limit": 10,
+            "per_run_cap": 10,
+            "account": "Free",
+        })
+        self.assertIn("App limit: 3 of 10 downloads in the last 24 hours", message)
+
     def test_download_confirmation_updates_status_and_logs_path(self):
         class AsyncLines:
             def __init__(self, lines):

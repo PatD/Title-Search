@@ -128,21 +128,35 @@ def format_quota_status(quota: dict) -> str:
     remaining = quota.get("remaining_downloads")
     limit = quota.get("daily_limit")
     account = quota.get("account", "OpenSubtitles account")
+    local_remaining = quota.get("local_remaining_downloads")
+    local_limit = quota.get("local_daily_limit")
+    local_text = None
+    if local_remaining is not None and local_limit is not None:
+        local_text = f"App limit: {int(local_remaining)} of {int(local_limit)} downloads in the last 24 hours"
     if remaining is None:
-        return f"OpenSubtitles allowance couldn't be verified ({account}). Scanning does not use download quota."
+        message = f"OpenSubtitles allowance couldn't be verified ({account})."
+        if local_text:
+            message += f" {local_text}."
+        return f"{message} Scanning does not use download quota."
     remaining = max(0, int(remaining))
     if limit is not None:
         allowance = f"{remaining} of {int(limit)} daily subtitle downloads remain"
     else:
         allowance = f"{remaining} subtitle download(s) remain"
     if remaining == 0:
-        return f"OpenSubtitles: {allowance}. Downloads may resume when the allowance resets; scans still work."
+        message = f"OpenSubtitles: {allowance}."
+        if local_text:
+            message += f" {local_text}."
+        return f"{message} Downloads may resume when the allowance resets; scans still work."
     per_run = max(1, int(quota.get("per_run_cap", 1)))
     runs, partial = divmod(remaining, per_run)
     capacity = f"About {runs} full run(s) at the current {per_run}-download cap"
     if partial:
         capacity += f", plus {partial} download(s)"
-    return f"OpenSubtitles: {allowance}. {capacity}. Scans themselves are not quota-limited."
+    message = f"OpenSubtitles: {allowance}. {capacity}."
+    if local_text:
+        message += f" {local_text}."
+    return f"{message} Scans themselves are not quota-limited."
 
 
 class CredentialScreen(ModalScreen[dict | None]):

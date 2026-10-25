@@ -201,9 +201,12 @@ summarizes videos scanned, existing SRTs skipped, subtitles created, videos
 without subtitles, and issues. If all movies already have matching SRT files,
 the status explicitly says so. If no videos are found, the status reports that.
 Successful downloads trigger an on-screen confirmation naming the movie and
-showing the saved subtitle path. The allowance panel reports the account's
-remaining daily downloads when OpenSubtitles provides that information; scans
-themselves do not consume the download allowance.
+showing the saved subtitle path. The allowance panel reports OpenSubtitles'
+remaining quota when available, plus the app's limit of 10 successful downloads
+in any rolling 24-hour period. The app records successful downloads in
+`download_history.json` beside the program and applies that limit across runs
+on this device. OpenSubtitles' account quota may be lower and remains in effect.
+Searches and scans do not consume either download allowance.
 
 ## Use the command-line interface
 
@@ -219,10 +222,10 @@ python .\subtitle_tool.py --cli "D:\Movies" --style both --max-downloads 4
 
 Subfolder searching is on by default; use `--no-recursive` to scan only the
 selected folder. The default subtitle style is `standard`; other values are
-`sdh` and `both`. The conservative free-account download cap is 10 per run.
-The tool reads the account's remaining quota when available, and OpenSubtitles
-enforces its actual daily quota across all runs. Searches do not count as
-downloads. `--max-downloads` can lower the per-run cap.
+`sdh` and `both`. The tool enforces 10 successful downloads in any rolling
+24-hour period across runs on this device. OpenSubtitles enforces its account
+quota across all runs and devices. Searches do not count as downloads.
+`--max-downloads` can lower the per-run cap.
 
 ## Errors and troubleshooting
 

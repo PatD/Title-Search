@@ -1,4 +1,5 @@
 subtitle_credentials.json
+download_history.json
 .venv/
 .audit-venv/
 *.srt

@@ -98,6 +98,7 @@ TUI_DOWNLOAD_MARKER = "TITLE_SEARCH_DOWNLOAD:"
 VIDEO_EXTS = {".mp4", ".mkv", ".avi", ".mov", ".m4v", ".webm"}
 CHUNK = 65536
 FREE_ACCOUNT_DAILY_CAP = 10
+LOCAL_DAILY_WINDOW_SECONDS = 24 * 60 * 60
 
 
 def opensubtitles_hash(path: Path) -> str:
@@ -641,6 +642,55 @@ def account_limits(key: str, token: str | None, api_base: str, login_user: dict)
     return remaining, limit, description
 
 
+def local_download_history_path() -> Path:
+    """Return the app-local file used to enforce its rolling download cap."""
+    return Path(__file__).with_name("download_history.json")
+
+
+def load_recent_downloads(path: Path | None = None, *, now: float | None = None) -> list[float]:
+    """Load successful downloads from the last rolling 24 hours."""
+    path = path or local_download_history_path()
+    now = time.time() if now is None else now
+    if not path.exists():
+        return []
+    try:
+        values = json.loads(path.read_text(encoding="utf-8"))
+        if not isinstance(values, list):
+            raise ValueError("history must be a JSON list")
+        recent = [float(value) for value in values]
+        if any(not (0 <= value <= now) for value in recent):
+            raise ValueError("history contains an invalid timestamp")
+    except (OSError, ValueError, TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot read download history {path}: {exc}") from exc
+    return [value for value in recent if now - value < LOCAL_DAILY_WINDOW_SECONDS]
+
+
+def save_download_history(history: list[float], path: Path | None = None) -> None:
+    """Atomically persist the successful download timestamps."""
+    path = path or local_download_history_path()
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                         prefix=f"{path.name}.", suffix=".tmp",
+                                         delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(history, stream)
+            stream.write("\n")
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
+def record_local_download(history: list[float], *, now: float | None = None,
+                          path: Path | None = None) -> None:
+    """Record a completed download and persist the rolling window."""
+    now = time.time() if now is None else now
+    history[:] = [value for value in history if now - value < LOCAL_DAILY_WINDOW_SECONDS]
+    history.append(now)
+    save_download_history(history, path)
+
+
 def select_result(items, path: Path, search_kind: str, source_fps=None):
     show(f"\n{path.name}: {len(items)} English {search_kind} result(s)", style="bold")
     title_search = search_kind.startswith("title/year")
@@ -916,17 +966,32 @@ def main():
         )
     except (TypeError, ValueError, OverflowError):
         remaining, daily_limit, account_description = None, None, "quota unavailable"
-    budget = min(args.max_downloads, remaining) if remaining is not None else args.max_downloads
+    history_error = None
+    try:
+        download_history = load_recent_downloads()
+    except RuntimeError as exc:
+        # If local history cannot be trusted, block downloads rather than bypass the cap.
+        download_history = [time.time()] * FREE_ACCOUNT_DAILY_CAP
+        history_error = str(exc)
+    local_remaining = max(0, FREE_ACCOUNT_DAILY_CAP - len(download_history))
+    limits = [args.max_downloads, local_remaining]
+    if remaining is not None:
+        limits.append(remaining)
+    budget = min(limits)
     show(f"OpenSubtitles account: {account_description}. This run is capped at {budget} download(s).", style="dim")
     emit_tui_quota({
         "remaining_downloads": remaining,
         "daily_limit": daily_limit,
+        "local_remaining_downloads": local_remaining,
+        "local_daily_limit": FREE_ACCOUNT_DAILY_CAP,
         "per_run_cap": args.max_downloads,
         "account": account_description,
     })
-    quota_exhausted = bool(key and api_active and remaining == 0)
+    if history_error:
+        show(f"Local download history could not be read; downloads are disabled for safety: {history_error}", style="yellow")
+    quota_exhausted = budget == 0
     if quota_exhausted:
-        show("OpenSubtitles reports no subtitle downloads remaining in the current daily allowance. This scan will check local files without searching for downloads.", style="yellow")
+        show("The 24-hour download allowance is exhausted. This scan will check local files without searching for downloads.", style="yellow")
     if startup_note:
         show(f"OpenSubtitles startup issue: {startup_note}", style="yellow")
     download_attempts = 0
@@ -1000,6 +1065,7 @@ def main():
                                         row["outputs"].append(written_path)
                                         downloaded += 1
                                         successful_downloads += 1
+                                        record_local_download(download_history)
                                         print(f"Downloaded successfully: {written_path}", flush=True)
                                         emit_tui_download(video.name, written_path)
                             else:
@@ -1024,6 +1090,7 @@ def main():
                                 row["outputs"].append(written_path)
                                 downloaded += 1
                                 successful_downloads += 1
+                                record_local_download(download_history)
                                 print(f"Downloaded successfully: {written_path}", flush=True)
                                 emit_tui_download(video.name, written_path)
                     else:
