@@ -7,6 +7,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 from collections.abc import Iterator
 from pathlib import Path
 
@@ -38,6 +39,36 @@ QUOTA_MARKER = "TITLE_SEARCH_QUOTA:"
 DOWNLOAD_MARKER = "TITLE_SEARCH_DOWNLOAD:"
 ANSI_ESCAPE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 CLI_SCRIPT = Path(__file__).with_name("subtitle_tool.py")
+SETTINGS_PATH = Path(__file__).with_name("title_search_settings.json")
+
+
+def load_settings(path: Path = SETTINGS_PATH) -> dict:
+    """Load non-sensitive app preferences, returning an empty object if absent."""
+    if not path.exists():
+        return {}
+    try:
+        values = json.loads(path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeError, json.JSONDecodeError) as exc:
+        raise RuntimeError(f"Cannot read app settings {path}: {exc}") from exc
+    if not isinstance(values, dict):
+        raise RuntimeError(f"App settings {path} must contain a JSON object")
+    return values
+
+
+def save_settings(values: dict, path: Path = SETTINGS_PATH) -> None:
+    """Atomically save non-sensitive app preferences."""
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile("w", encoding="utf-8", dir=path.parent,
+                                         prefix=f"{path.name}.", suffix=".tmp",
+                                         delete=False) as stream:
+            temporary = Path(stream.name)
+            json.dump(values, stream, indent=2)
+            stream.write("\n")
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
 
 
 class AsciiGradient(Static):
@@ -446,7 +477,14 @@ class TitleSearchApp(App[None]):
 
     def __init__(self, initial_folder: str = "", **kwargs):
         super().__init__(**kwargs)
-        self.initial_folder = initial_folder
+        self._settings_error = None
+        try:
+            self._settings = load_settings()
+        except RuntimeError as exc:
+            self._settings = {}
+            self._settings_error = str(exc)
+        saved_folder = self._settings.get("library_path", "")
+        self.initial_folder = initial_folder or (saved_folder if isinstance(saved_folder, str) else "")
         self.process: asyncio.subprocess.Process | None = None
         self._run_summary: dict | None = None
         self._credentials: dict | None = None
@@ -487,6 +525,9 @@ class TitleSearchApp(App[None]):
 
     def on_mount(self) -> None:
         self.query_one("#folder", Input).focus()
+        if self._settings_error:
+            self.set_status("Saved app settings could not be read.")
+            self.write_log(self._settings_error)
 
     def action_set_download_cap(self) -> None:
         if self._scan_active:
@@ -642,9 +683,15 @@ class TitleSearchApp(App[None]):
             if not folder.is_dir():
                 self.set_status(f"Folder not found: {folder}")
                 return
+            folder = folder.resolve()
         except OSError as exc:
             self.set_status(f"Cannot inspect folder: {exc}")
             return
+        try:
+            self._settings["library_path"] = str(folder)
+            save_settings(self._settings)
+        except (OSError, RuntimeError) as exc:
+            self.write_log(f"Could not save the library path for next time: {exc}")
         max_downloads = self._max_downloads
 
         if self._credentials is None:

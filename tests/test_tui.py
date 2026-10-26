@@ -19,11 +19,32 @@ from title_search_tui import (
     TitleSearchApp,
     format_quota_status,
     format_run_summary,
+    load_settings,
     normalize_folder_path,
+    save_settings,
 )
 
 
 class TitleSearchTuiTests(unittest.TestCase):
+    def test_library_path_settings_round_trip(self):
+        with tempfile.TemporaryDirectory(dir=Path(__file__).resolve().parent) as directory:
+            settings_path = Path(directory) / "settings.json"
+            values = {"library_path": "C:/Movies/Library"}
+
+            save_settings(values, settings_path)
+
+            self.assertEqual(load_settings(settings_path), values)
+
+    def test_app_restores_saved_library_path_unless_explicit_path_is_given(self):
+        with mock.patch("title_search_tui.load_settings", return_value={
+            "library_path": "C:/Movies/Remembered",
+        }):
+            self.assertEqual(TitleSearchApp().initial_folder, "C:/Movies/Remembered")
+            self.assertEqual(
+                TitleSearchApp(initial_folder="D:/Movies/Explicit").initial_folder,
+                "D:/Movies/Explicit",
+            )
+
     def test_app_exposes_title_palette_and_keyboard_actions(self):
         app = TitleSearchApp()
 
@@ -321,12 +342,15 @@ class TitleSearchTuiTests(unittest.TestCase):
             app._credentials = {"api_key": "test-key", "username": "", "password": ""}
             app._max_downloads = 5
 
-            with mock.patch(
-                "title_search_tui.asyncio.create_subprocess_exec",
-                new=fail_launch,
-            ):
+            with mock.patch("title_search_tui.save_settings") as persist_settings, \
+                 mock.patch(
+                    "title_search_tui.asyncio.create_subprocess_exec",
+                    new=fail_launch,
+                ):
                 with self.assertRaises(StopIteration):
                     app.start_scan().send(None)
+
+            persist_settings.assert_called_once_with({"library_path": str(Path(folder_path).resolve())})
 
         app.set_status.assert_any_call("Could not start the subtitle engine.")
         self.assertTrue(any(
@@ -399,7 +423,8 @@ class TitleSearchTuiTests(unittest.TestCase):
                     raise RuntimeError("temporary worker failure")
                 return FakeProcess()
 
-            with mock.patch("title_search_tui.asyncio.create_subprocess_exec", new=create_process):
+            with mock.patch("title_search_tui.save_settings") as persist_settings, \
+                 mock.patch("title_search_tui.asyncio.create_subprocess_exec", new=create_process):
                 with self.assertRaises(StopIteration):
                     app.start_scan().send(None)
 
@@ -415,6 +440,8 @@ class TitleSearchTuiTests(unittest.TestCase):
                     app.start_scan().send(None)
 
         self.assertEqual(launches, 2)
+        self.assertEqual(persist_settings.call_count, 2)
+        persist_settings.assert_called_with({"library_path": str(Path(folder_path).resolve())})
         self.assertEqual(len(child_environments), 2)
         self.assertTrue(all(env["PYTHONUTF8"] == "1" for env in child_environments))
         self.assertTrue(all(env["PYTHONIOENCODING"] == "utf-8" for env in child_environments))

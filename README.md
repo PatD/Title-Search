@@ -176,7 +176,8 @@ python .\subtitle_tool.py "D:\Movies"
 In the interface:
 
 1. Enter the folder that contains your movies. The app searches subfolders by
-   default. Windows paths accept either `/` or `\` separators.
+   default. Windows paths accept either `/` or `\` separators. After you start
+   a scan from a valid folder, the app remembers that path for the next launch.
 2. Choose Standard English, English SDH, or Offer both. The per-run download
    cap defaults to 10; change it from the command palette with **Set download cap**.
 3. Choose **Start scan**. If credentials are missing, enter them in the
@@ -207,6 +208,8 @@ in any rolling 24-hour period. The app records successful downloads in
 `download_history.json` beside the program and applies that limit across runs
 on this device. OpenSubtitles' account quota may be lower and remains in effect.
 Searches and scans do not consume either download allowance.
+The library path is stored in `title_search_settings.json` beside the app; it
+contains no account credentials.
 
 ## Use the command-line interface
 
